@@ -31,8 +31,17 @@ pub enum Request {
         effect: EffectKind,
     },
     /// The value produced by an interaction the engine told us to execute.
+    ///
+    /// `unknown` means the client is handing back a value while telling us it is not
+    /// grounded in the recording -- an adapter that could not put its environment back
+    /// into the recorded state, say. The value is still useful; it is just not evidence
+    /// about the original execution.
     #[serde(rename = "result")]
-    CallResult { value: Value },
+    CallResult {
+        value: Value,
+        #[serde(default)]
+        unknown: bool,
+    },
     /// The interaction the engine told us to execute raised. `unknown` means the
     /// client could not obtain the information at all -- the only provenance claim a
     /// client may make, because it is the one that can only lose trust, never gain it.

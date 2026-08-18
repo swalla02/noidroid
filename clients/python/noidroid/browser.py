@@ -39,7 +39,7 @@ import os
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
-from . import WRITE, Unavailable
+from . import WRITE, Unavailable, Ungrounded
 
 __all__ = ["Browser", "BrowserUnavailable"]
 
@@ -77,6 +77,7 @@ class Browser:
         allow_network: Optional[bool] = None,
         root: str = "browser",
         channel: Optional[str] = None,
+        strict: bool = False,
     ) -> None:
         self._nd = session
         self._headless = headless
@@ -102,6 +103,13 @@ class Browser:
         self._context = None
         self._page = None
 
+        # A page digest is an exact comparison, and real pages carry clocks, ads and
+        # session tokens. Making a mismatch fatal by default would refuse most real
+        # branches; making it invisible would be dishonest. So the default is to carry
+        # on with everything downstream marked `unknown`, and `strict=True` is there
+        # for anyone who wants the gate -- regression testing, say.
+        self._strict = strict
+        self._ungrounded = False
         self._reconstruction: Optional[dict] = None
         self._served = {"replayed": 0, "live": 0, "blocked": 0}
         self._blocked: list[str] = []
@@ -168,6 +176,10 @@ class Browser:
             observation["reconstruction"] = self._reconstruction
             self._reconstruction = None
         self._append_action(target, args, observation)
+        if self._ungrounded:
+            # The browser was never put back into the recorded state, so nothing it
+            # tells us from here on is evidence about the original execution.
+            return Ungrounded(observation)
         return observation
 
     def _reconstruction_note(self) -> str:
@@ -259,12 +271,15 @@ class Browser:
         )
         if actual == expected:
             print(f"[noidroid.browser] {note}; page state verified")
-        else:
-            print(
-                f"[noidroid.browser] {note}; PAGE STATE DID NOT MATCH "
-                f"(recorded {expected}, got {actual}) — this branch starts from a "
-                f"state that could not be reproduced"
-            )
+            return
+        detail = (
+            f"page state did not match (recorded {expected}, got {actual}); this "
+            f"branch starts from a state that could not be reproduced"
+        )
+        if self._strict:
+            raise Unavailable(f"{note}; {detail}")
+        self._ungrounded = True
+        print(f"[noidroid.browser] {note}; {detail} — everything from here is unknown")
 
     def _recorded_actions(self) -> list[dict]:
         if not self._actions_path.exists():

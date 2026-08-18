@@ -367,7 +367,14 @@ impl<'a> Session<'a> {
                 options,
                 choice,
             } => self.on_decide(name, options, choice),
-            Request::CallResult { value } => self.on_result(value),
+            Request::CallResult { value, unknown } => {
+                if unknown {
+                    if let Some(pending) = self.pending.as_mut() {
+                        pending.provenance = Provenance::Unknown;
+                    }
+                }
+                self.on_result(value)
+            }
             Request::CallError {
                 message,
                 kind,
@@ -795,8 +802,13 @@ impl<'a> Session<'a> {
                 .unwrap_or("the recording says this did not return")
                 .to_string()
         };
+        let provenance = recorded
+            .effects
+            .first()
+            .map(|e| e.provenance)
+            .unwrap_or(Provenance::Real);
         match outcome {
-            EffectOutcome::Value => Response::use_value(value, "real", "replayed"),
+            EffectOutcome::Value => Response::use_value(value, provenance.label(), "replayed"),
             EffectOutcome::Error => Response::fail("failed", message()),
             EffectOutcome::Unavailable => Response::fail("unavailable", message()),
             EffectOutcome::Denied => Response::deny(message()),

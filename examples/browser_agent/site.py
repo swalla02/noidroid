@@ -59,6 +59,20 @@ fetch('/api/book/%(id)s').then(r => r.json()).then(b => {
 </script>"""
 
 
+# Deliberately not reproducible: the HTML is byte-identical every time, but the text
+# the browser ends up showing is not, because it comes from the clock rather than from
+# the response. Re-driving this page can never reproduce the recorded observation,
+# which is exactly the boundary the adapter has to be honest about.
+VOLATILE = """<!doctype html>
+<meta charset="utf-8"><title>Volatile</title>
+<h1>Volatile</h1>
+<div id="stamp">pending</div>
+<script>
+document.getElementById('stamp').textContent = 'rendered at ' + Date.now();
+document.body.dataset.ready = 'true';
+</script>"""
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *_args):
         pass  # quiet: the example's output should be the agent's, not the server's
@@ -75,6 +89,8 @@ class Handler(BaseHTTPRequestHandler):
         path = self.path
         if path == "/":
             return self._send(INDEX, "text/html; charset=utf-8")
+        if path == "/volatile":
+            return self._send(VOLATILE, "text/html; charset=utf-8")
         if path == "/api/flights":
             return self._send(json.dumps(FLIGHTS), "application/json")
         for prefix, page in (("/flight/", DETAIL), ("/book/", BOOKED)):

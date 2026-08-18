@@ -47,6 +47,26 @@ fn browser_available() -> bool {
         .unwrap_or(false)
 }
 
+/// An agent that looks at a page which cannot be reproduced, then makes a decision.
+/// Branching on that decision forces the adapter to re-drive a page whose rendered
+/// text came from the clock, so reconstruction is guaranteed to fail.
+const VOLATILE_AGENT: &str = r##"
+import os
+import noidroid
+from noidroid.browser import Browser
+
+nd = noidroid.connect()
+browser = Browser(nd)
+site = os.environ["FLIGHT_SITE"]
+try:
+    browser.goto(site + "/volatile", wait_for="#stamp")
+    choice = browser.decide("pick", options=["a", "b"], choice="a")
+    seen = browser.read()
+    nd.finish("done", {"chose": choice, "url": seen["url"]})
+finally:
+    browser.close()
+"##;
+
 struct Site {
     child: Child,
     port: u16,
@@ -183,6 +203,13 @@ impl Fixture {
             .expect("replay should run to completion")
     }
 
+    /// Point the fixture at an agent written from the test rather than an example.
+    fn spec_for(&self, agent: &std::path::Path, name: &str, allow_network: bool) -> RunSpec {
+        let mut spec = self.spec(name, allow_network);
+        spec.command = vec!["python3".into(), agent.display().to_string()];
+        spec
+    }
+
     /// Index of the declared decision, so the test does not hard-code a step number.
     fn decision_step(&self, t: &Trajectory) -> u64 {
         self.repo
@@ -306,6 +333,77 @@ fn a_browser_branch_can_reach_a_different_outcome() {
     // The parent is untouched by any of it.
     let parent_after = f.repo.load_trajectory("web-1").unwrap();
     assert_eq!(parent_after, recorded);
+
+    site.stop();
+}
+
+#[test]
+fn a_page_that_cannot_be_reproduced_makes_everything_after_it_unknown() {
+    if !browser_available() {
+        eprintln!("SKIP: browser adapter test needs playwright and chromium");
+        return;
+    }
+
+    let f = Fixture::new(8714);
+    let site = Site::start(&f.root, f.port);
+    let agent = f.dir.join("volatile_agent.py");
+    fs::write(&agent, VOLATILE_AGENT).unwrap();
+
+    let recorded = engine::run(
+        &f.repo,
+        &f.spec_for(&agent, "web-1", true),
+        Mode::Record,
+        None,
+    )
+    .expect("recording should succeed")
+    .trajectory
+    .unwrap();
+    let at = f.decision_step(&recorded);
+
+    // Everything in the original run was observed for real.
+    for (_, step) in f.repo.chain(&recorded).unwrap() {
+        assert_eq!(step.provenance, Provenance::Real, "step {}", step.index);
+    }
+
+    let branch = engine::run(
+        &f.repo,
+        &f.spec_for(&agent, "web-alt", true),
+        Mode::Branch {
+            at,
+            intervention: Intervention::ReplaceDecision {
+                name: "pick".into(),
+                value: serde_json::json!("b"),
+            },
+            simulate: BTreeMap::new(),
+        },
+        Some(&recorded),
+    )
+    .expect("the branch should run to completion")
+    .trajectory
+    .expect("the branch should produce a trajectory");
+
+    // The adapter could not put the page back the way the recording says it looked.
+    // That has to end up in the trajectory, not only in the terminal: the observation
+    // it hands back is a real value, but it is not evidence about the original run.
+    let chain = f.repo.chain(&branch).unwrap();
+    let after_divergence: Vec<_> = chain.iter().filter(|(_, s)| s.index > at).collect();
+    assert!(
+        !after_divergence.is_empty(),
+        "the branch went past the divergence"
+    );
+    let ungrounded = after_divergence
+        .iter()
+        .flat_map(|(_, s)| s.effects.iter())
+        .any(|e| e.provenance == Provenance::Unknown);
+    assert!(
+        ungrounded,
+        "an unreproducible starting state must mark its values unknown, not just warn"
+    );
+    assert_eq!(
+        chain.last().unwrap().1.provenance,
+        Provenance::Unknown,
+        "unknown propagates to the head, because provenance never improves downstream"
+    );
 
     site.stop();
 }
