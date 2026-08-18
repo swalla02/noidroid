@@ -7,18 +7,6 @@ how the package version relates to `STEP_VERSION`, the on-disk object format.
 
 ## [Unreleased]
 
-### Added
-
-- Continuous integration: fmt, clippy (`-D warnings`), the full suite on Linux with a
-  browser, the suite without a browser (the browser tests must skip cleanly), the
-  suite on macOS, and the CLI example end to end.
-- A release workflow triggered by `v*` tags, which refuses a tag that disagrees with
-  `Cargo.toml` or has no changelog section, and publishes Linux and macOS binaries.
-- `format_is_pinned`: a test asserting the exact serialised bytes and digest of a
-  known step, so a change to the on-disk format cannot pass unnoticed.
-- `CONTRIBUTING.md`, `SECURITY.md`, issue and pull-request templates, Dependabot, and
-  a pinned toolchain.
-
 ## [0.1.0] - 2026-08-18
 
 First working prototype: an execution can be recorded, returned to, and branched.
@@ -47,7 +35,18 @@ First working prototype: an execution can be recorded, returned to, and branched
   Chromium, records HTTP responses, and reconstructs a browser session by re-driving
   recorded actions — verified against a recorded page digest, and demonstrated with
   the website switched off.
-- Two worked examples and 23 tests, two of which drive real Chromium.
+- Two worked examples and 24 tests, two of which drive real Chromium.
+- **Engineering practice.** Continuous integration on every pull request: fmt, clippy
+  (`-D warnings`), the full suite on Linux with a browser, the suite *without* a
+  browser (the browser tests must skip cleanly, or contributors cannot run the suite),
+  the suite on macOS because the Unix-socket transport is a portability claim, and the
+  CLI example end to end including a check that branching did not move its parent's
+  head. Releases come from `v*` tags only, and are refused if the tag disagrees with
+  `Cargo.toml` or has no changelog section.
+- `format_is_pinned`, which asserts the exact serialised bytes and address of a known
+  step. Object names *are* the hash of their bytes, so a silent format change would
+  invalidate every recording ever made; see [CONTRIBUTING.md](CONTRIBUTING.md) for when
+  a change needs a `STEP_VERSION` bump.
 
 ### Known limitations
 
