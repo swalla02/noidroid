@@ -176,6 +176,13 @@ impl Fixture {
         .expect("the branch should produce a trajectory")
     }
 
+    fn replay(&self, t: &Trajectory) -> engine::Report {
+        let mut spec = self.spec("unused", false);
+        spec.name = None;
+        engine::run(&self.repo, &spec, Mode::Replay, Some(t))
+            .expect("replay should run to completion")
+    }
+
     /// Index of the declared decision, so the test does not hard-code a step number.
     fn decision_step(&self, t: &Trajectory) -> u64 {
         self.repo
@@ -256,6 +263,17 @@ fn a_browser_session_reconstructs_from_recorded_responses_alone() {
         reported.contains("page state verified"),
         "the branch should record that it re-drove the prefix and checked it, got: {reported}"
     );
+
+    // A trajectory that stopped because it ran out of knowledge has to replay to the
+    // same objects. Reproducing only the values, and not the fact that a call did not
+    // return, would let the program sail past the point where its recording ends.
+    let replayed = f.replay(&blocked);
+    assert!(
+        replayed.faithful(),
+        "the blocked branch should replay exactly: {:?}",
+        replayed.divergences
+    );
+    assert_eq!(replayed.steps, blocked.steps);
 }
 
 #[test]

@@ -285,6 +285,9 @@ cannot be vague about its own boundaries.
 - **A `--result` intervention on a browser observation desynchronises belief from
   page.** The agent is told something the page does not say; everything after is
   `simulated`.
+- **A replay reproduces that a call failed and with what message, not the original
+  exception type.** A program that branches on exception class rather than on the
+  failure itself will be reported as divergent.
 - **No scale work.** No packing, no garbage collection, no remote store, no large
   artifact handling. Unix sockets only, so Linux and macOS but not Windows.
 
@@ -310,7 +313,7 @@ and anything resembling a universal simulator.
 ## Development
 
 ```bash
-cargo test                      # 22 tests: unit, end-to-end, and real-browser
+cargo test                      # 23 tests: unit, end-to-end, and real-browser
 cargo clippy --all-targets
 
 # the browser tests need Chromium; they print SKIP and pass without it

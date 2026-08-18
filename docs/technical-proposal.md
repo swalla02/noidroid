@@ -514,7 +514,7 @@ build the products the trajectory graph makes possible.
 
 What follows is what exists and has been run, as opposed to what is planned above.
 
-**Built and verified** (22 tests: 10 unit, 10 end-to-end through a real subprocess, 2 driving real Chromium):
+**Built and verified** (23 tests: 10 unit, 11 end-to-end through a real subprocess, 2 driving real Chromium):
 
 | Claim | How it is checked |
 |---|---|
@@ -551,6 +551,7 @@ What follows is what exists and has been run, as opposed to what is planned abov
 | A browser session reconstructs from recorded responses alone | `a_browser_session_reconstructs_from_recorded_responses_alone` — records against a live site, **shuts the site down**, then branches; the prefix is re-driven into a fresh browser and the page digest matches |
 | Running out of recorded knowledge is `unknown`, not `live` | same test — the first unrecorded page ends the branch with `Provenance::Unknown` and outcome `blocked` |
 | A browser branch can reach a different outcome | `a_browser_branch_can_reach_a_different_outcome` — the counterfactual books an available flight and succeeds, head provenance `simulated`, parent unchanged |
+| A trajectory that stopped because something failed replays to the same objects | `a_recorded_failure_is_reproduced_as_a_failure`, and the same assertion on the blocked browser branch |
 
 Two further findings from building it:
 
@@ -561,7 +562,16 @@ Two further findings from building it:
    first example did. Now the directory's *contents* are pruned and the directory itself is kept
    (`materialize_keeps_the_directory_itself`, plus an end-to-end regression test). This was a
    correctness bug in the core, found by an adapter that touched it harder.
-5. **A client needs a way to say "I could not obtain this."** Without one, an adapter that ran out
+5. **How an interaction *ended* is content, not incidental.** Replay re-served every
+   recorded effect as a value, so a run that had stopped because a call failed, was
+   denied, or ran out of knowledge did not stop when replayed — it carried straight on
+   past the end of its own recording and diverged. Effects now record an outcome
+   (`value` / `error` / `unavailable` / `denied`) and replay reproduces it. Two
+   corollaries worth stating: the recorded message must be the bare one the program
+   saw, not a decorated one, or any program that echoes it diverges; and replay
+   reproduces *that* a call failed and with what message, never the original
+   exception type.
+6. **A client needs a way to say "I could not obtain this."** Without one, an adapter that ran out
    of recorded knowledge had its failure recorded as a `live` value — a real thing that happened —
    when the truth was that nothing happened at all. The protocol now accepts `unknown` on an error,
    the only provenance claim a client may make, because it is the one that can only lose trust.

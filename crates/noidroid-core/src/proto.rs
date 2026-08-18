@@ -39,6 +39,10 @@ pub enum Request {
     #[serde(rename = "error")]
     CallError {
         message: String,
+        /// The client's name for what went wrong. Recorded for the reader's benefit;
+        /// a replay reproduces the message, not the exception class.
+        #[serde(default, rename = "type")]
+        kind: String,
         #[serde(default)]
         unknown: bool,
     },

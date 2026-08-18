@@ -179,6 +179,32 @@ pub struct Effect {
     pub value: Digest,
     pub effect: EffectKind,
     pub provenance: Provenance,
+    /// How the interaction ended. Replay has to reproduce *that* as faithfully as it
+    /// reproduces values: a run that stopped because something failed would
+    /// otherwise sail straight past the end of its own recording.
+    #[serde(default, skip_serializing_if = "EffectOutcome::is_value")]
+    pub outcome: EffectOutcome,
+}
+
+/// What the caller got back. `Value` is the ordinary case and is omitted from the
+/// serialised form, so effects that returned a value keep their exact bytes.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EffectOutcome {
+    #[default]
+    Value,
+    /// The interaction was attempted and raised.
+    Error,
+    /// The information could not be obtained at all.
+    Unavailable,
+    /// We refused to perform it.
+    Denied,
+}
+
+impl EffectOutcome {
+    pub fn is_value(&self) -> bool {
+        matches!(self, EffectOutcome::Value)
+    }
 }
 
 /// The deliberate change that made a branch differ from its parent.
@@ -386,6 +412,7 @@ mod tests {
                 value: Digest::of(b"v"),
                 effect: EffectKind::Irreversible,
                 provenance: Provenance::Unknown,
+                outcome: EffectOutcome::Denied,
             }],
             Digest::of(b""),
             Provenance::Real,

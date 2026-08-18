@@ -26,8 +26,8 @@ use serde_json::{json, Value};
 use crate::error::{Error, Result};
 use crate::hash::Digest;
 use crate::model::{
-    Action, Delivery, Effect, EffectKind, ForkPoint, Intervention, Outcome, Provenance, Step,
-    StepNote, Trajectory,
+    Action, Delivery, Effect, EffectKind, EffectOutcome, ForkPoint, Intervention, Outcome,
+    Provenance, Step, StepNote, Trajectory,
 };
 use crate::proto::{Request, Response};
 use crate::repo::Repo;
@@ -317,6 +317,7 @@ struct Pending {
     effect: EffectKind,
     provenance: Provenance,
     started: Instant,
+    outcome: EffectOutcome,
 }
 
 impl<'a> Session<'a> {
@@ -367,13 +368,20 @@ impl<'a> Session<'a> {
                 choice,
             } => self.on_decide(name, options, choice),
             Request::CallResult { value } => self.on_result(value),
-            Request::CallError { message, unknown } => {
-                if unknown {
-                    if let Some(pending) = self.pending.as_mut() {
+            Request::CallError {
+                message,
+                kind,
+                unknown,
+            } => {
+                if let Some(pending) = self.pending.as_mut() {
+                    pending.outcome = if unknown {
                         pending.provenance = Provenance::Unknown;
-                    }
+                        EffectOutcome::Unavailable
+                    } else {
+                        EffectOutcome::Error
+                    };
                 }
-                self.on_result(json!({ "error": message }))
+                self.on_result(json!({ "error": message, "type": kind }))
             }
             Request::Finish { status, result } => {
                 let action = Action::Finish {
@@ -503,6 +511,7 @@ impl<'a> Session<'a> {
                     effect,
                     provenance: self.own_provenance(),
                     started: Instant::now(),
+                    outcome: EffectOutcome::Value,
                 });
                 Ok(Response::execute())
             }
@@ -543,6 +552,7 @@ impl<'a> Session<'a> {
                     value: blob,
                     effect: EffectKind::Read,
                     provenance,
+                    outcome: EffectOutcome::Value,
                 };
                 let delivery = self.delivery_now();
                 self.commit(action, vec![effect], provenance, None, delivery, false)?;
@@ -584,6 +594,7 @@ impl<'a> Session<'a> {
             value: blob,
             effect: pending.effect,
             provenance: pending.provenance,
+            outcome: pending.outcome,
         };
         let delivery = self.delivery_now();
         let _ = pending.started;
@@ -620,6 +631,7 @@ impl<'a> Session<'a> {
             value: blob,
             effect,
             provenance: Provenance::Simulated,
+            outcome: EffectOutcome::Value,
         };
         self.commit(
             action,
@@ -653,6 +665,7 @@ impl<'a> Session<'a> {
             value: blob,
             effect: EffectKind::Irreversible,
             provenance: Provenance::Unknown,
+            outcome: EffectOutcome::Denied,
         };
         self.report.denied.push(target);
         self.commit(
@@ -679,6 +692,7 @@ impl<'a> Session<'a> {
                     value: blob,
                     effect: *effect,
                     provenance: Provenance::Simulated,
+                    outcome: EffectOutcome::Value,
                 };
                 self.commit(
                     action,
@@ -711,6 +725,7 @@ impl<'a> Session<'a> {
                     value: blob,
                     effect: EffectKind::Read,
                     provenance: Provenance::Simulated,
+                    outcome: EffectOutcome::Value,
                 };
                 self.commit(
                     rewritten,
@@ -733,6 +748,7 @@ impl<'a> Session<'a> {
                     value: blob,
                     effect: EffectKind::Read,
                     provenance: Provenance::Simulated,
+                    outcome: EffectOutcome::Value,
                 };
                 self.commit(
                     action,
@@ -760,9 +776,30 @@ impl<'a> Session<'a> {
     /// happened was a deliberately injected failure. A branch that stopped because a
     /// failure was injected has to stop in the same place when it is replayed.
     fn replayed_response(&self, recorded: &Step, value: Value) -> Response {
-        match &recorded.intervention {
-            Some(Intervention::Fail { error }) => Response::fail("injected", error.clone()),
-            _ => Response::use_value(value, "real", "replayed"),
+        if let Some(Intervention::Fail { error }) = &recorded.intervention {
+            return Response::fail("injected", error.clone());
+        }
+        // A client raises the same *class* of thing it raised the first time. The
+        // original exception type is not reproduced -- only that the call did not
+        // return, and with what message.
+        let outcome = recorded
+            .effects
+            .first()
+            .map(|e| e.outcome)
+            .unwrap_or_default();
+        let message = || {
+            value
+                .get("error")
+                .or_else(|| value.get("denied"))
+                .and_then(Value::as_str)
+                .unwrap_or("the recording says this did not return")
+                .to_string()
+        };
+        match outcome {
+            EffectOutcome::Value => Response::use_value(value, "real", "replayed"),
+            EffectOutcome::Error => Response::fail("failed", message()),
+            EffectOutcome::Unavailable => Response::fail("unavailable", message()),
+            EffectOutcome::Denied => Response::deny(message()),
         }
     }
 

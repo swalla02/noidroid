@@ -119,6 +119,8 @@ class Session:
                 raise Divergence(detail)
             if kind == "injected":
                 raise InjectedFailure(detail)
+            if kind == "unavailable":
+                raise Unavailable(detail)
             raise NoidroidError(detail)
         return response
 
@@ -147,7 +149,12 @@ class Session:
                 self._rpc(
                     {
                         "op": "error",
-                        "message": f"{type(exc).__name__}: {exc}",
+                        # The bare message, so a replay can hand back exactly what the
+                        # program saw the first time. The type is recorded separately:
+                        # replay reproduces that a call failed and with what message,
+                        # not the original exception class.
+                        "message": str(exc),
+                        "type": type(exc).__name__,
                         "unknown": isinstance(exc, Unavailable),
                     }
                 )

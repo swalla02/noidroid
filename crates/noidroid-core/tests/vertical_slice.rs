@@ -504,3 +504,39 @@ fn a_restore_does_not_pull_the_working_directory_out_from_under_the_program() {
         "b"
     );
 }
+
+#[test]
+fn a_recorded_failure_is_reproduced_as_a_failure() {
+    let f = Fixture::new("failure-replay");
+    let parent = f.record();
+
+    // Branch so that the irreversible call is denied. The branch therefore ends
+    // because something failed, not because the program ran out of work.
+    let branch = engine::run(
+        &f.repo,
+        &f.spec(Some("alt-denied"), &[]),
+        Mode::Branch {
+            at: 1,
+            intervention: Intervention::ReplaceResult {
+                value: serde_json::json!({"tag": "read", "counterfactual": true}),
+            },
+            simulate: BTreeMap::new(),
+        },
+        Some(&parent),
+    )
+    .unwrap()
+    .trajectory
+    .unwrap();
+    assert_eq!(branch.outcome.status, "blocked");
+
+    // Replaying it must stop for the same reason, in the same place. If a recorded
+    // failure came back as an ordinary value, the program would carry on past the
+    // end of its own recording.
+    let report = f.replay(&branch, &[]);
+    assert!(
+        report.faithful(),
+        "a trajectory that ended in a failure must replay to the same objects: {:?}",
+        report.divergences
+    );
+    assert_eq!(report.steps, branch.steps);
+}
