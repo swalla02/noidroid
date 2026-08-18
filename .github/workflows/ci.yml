@@ -109,3 +109,18 @@ jobs:
 
           noidroid verify | tee verify.txt
           grep -q "intact:" verify.txt
+
+          # The Stand profile is pure output, so it either prints or it does not.
+          noidroid stand | tee stand.txt
+          grep -q "PARANOID ANDROID" stand.txt
+          grep -q "DESTRUCTIVE POWER" stand.txt
+
+          # The viewer needs a terminal, so give it one, ask it to quit, and check it
+          # both drew the panes and left cleanly rather than wedging the session.
+          printf 'q' | timeout 20 script -qec "stty rows 30 cols 120; noidroid tui" \
+            /dev/null > tui.txt 2>&1
+          sed -e 's/\x1b\[[0-9;]*[A-Za-z]//g' -e 's/\x1b\[?[0-9]*[a-z]//g' tui.txt \
+            | tr -d '\000' > tui.plain
+          grep -q "PARANOID ANDROID" tui.plain
+          grep -q "TRAJECTORIES" tui.plain
+          grep -q "TIMELINE" tui.plain

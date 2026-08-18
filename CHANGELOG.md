@@ -7,6 +7,25 @@ how the package version relates to `STEP_VERSION`, the on-disk object format.
 
 ## [Unreleased]
 
+### Added
+
+- **`noidroid tui`** — the viewer the manifesto calls V0.1, built with
+  [ratatui](https://ratatui.rs). Three panes and one verb: the timeline is coloured by
+  provenance, and pressing `e` on a recorded decision reconstructs the prefix,
+  diverges, and returns a new trajectory without leaving the screen. `--plain` drops
+  the flourishes; `NO_COLOR` drops the colour; neither removes information, because
+  nothing is said in colour that is not also said in words.
+- **The Stand's colourway**, replacing the four-colour ANSI styling. Each colour is
+  bound to a meaning the tool already had — phosphor green `real`, chrome `live`,
+  violet `simulated`, amber `unknown`, cyan `replayed`, crimson for divergence — so
+  provenance is legible at a glance. Truecolor where the terminal admits to it, ANSI
+  where it does not, nothing when piped.
+- **`noidroid stand`**. Araki names Stands after music, so a Stand called PARANOID
+  ANDROID is built to the rule and fans will know it on sight. The six parameters are
+  graded honestly — Destructive Power **E**, because it can never change what
+  happened — which makes the stat block an accurate capability summary as well as a
+  joke. Nothing in the workflow goes through it.
+
 ### Fixed
 
 - A browser branch whose starting state could not be reproduced said so in the

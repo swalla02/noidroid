@@ -13,8 +13,10 @@ use noidroid_core::model::{Action, Intervention, Provenance, Step, Trajectory};
 use noidroid_core::repo::{self, Repo};
 use noidroid_core::{tree, Error, Result};
 
-mod style;
-use style::{bold, dim, ok, warn};
+mod palette;
+mod stand;
+mod tui;
+use palette::{bad, bold, dim, ok, provenance as ink_provenance, shell, warn};
 
 #[derive(Parser)]
 #[command(
@@ -89,6 +91,16 @@ enum Command {
     Diff { a: String, b: String },
     /// Re-hash every object and check nothing has been edited underneath us.
     Verify,
+    /// Browse trajectories and explore from a checkpoint, interactively.
+    Tui {
+        /// Start on this trajectory.
+        trajectory: Option<String>,
+        /// Hold still: no menacing glyphs, no flourishes.
+        #[arg(long)]
+        plain: bool,
+    },
+    /// The Stand.
+    Stand,
 }
 
 fn main() -> ExitCode {
@@ -144,6 +156,11 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
         Command::Tree => cmd_tree(&repo),
         Command::Diff { a, b } => cmd_diff(&repo, &a, &b),
         Command::Verify => cmd_verify(&repo),
+        Command::Tui { trajectory, plain } => tui::run(&repo, &cwd, trajectory, plain),
+        Command::Stand => {
+            stand::print_profile();
+            Ok(ExitCode::SUCCESS)
+        }
     }
 }
 
@@ -169,7 +186,7 @@ fn cmd_run(
     print_child_output(&report);
     match &report.trajectory {
         Some(t) => {
-            println!("{} {}", bold("recorded"), bold(&t.name));
+            println!("{} {}", shell("recorded"), bold(&t.name));
             print_timeline(repo, t)?;
             println!();
             print_census(&report);
@@ -229,7 +246,7 @@ fn cmd_show(repo: &Repo, reference: &str) -> Result<ExitCode> {
         .get(index as usize)
         .ok_or_else(|| Error::NotFound(format!("{name} has no step {index}")))?;
 
-    println!("{} {}@{}", bold("CHECKPOINT"), name, index);
+    println!("{} {}@{}", shell("CHECKPOINT"), name, index);
     println!("  {:<12} {}", dim("step"), digest.short());
     println!("  {:<12} {}", dim("action"), step.action.summary());
     if let Action::Decide { options, .. } = &step.action {
@@ -269,7 +286,7 @@ fn cmd_show(repo: &Repo, reference: &str) -> Result<ExitCode> {
         println!("               {} {}", dim("·"), entry.path);
     }
 
-    println!("\n  {}", bold("EXPLORE FROM HERE"));
+    println!("\n  {}", shell("EXPLORE FROM HERE"));
     match &step.action {
         Action::Decide {
             name: dname,
@@ -310,7 +327,7 @@ fn cmd_replay(repo: &Repo, cwd: &Path, name: &str) -> Result<ExitCode> {
         env: Vec::new(),
     };
     let report = engine::run(repo, &spec, Mode::Replay, Some(&t))?;
-    println!("{} {}", bold("REPLAY"), name);
+    println!("{} {}", shell("REPLAY"), name);
     println!(
         "  {:<22} {}",
         dim("steps re-derived"),
@@ -446,7 +463,7 @@ fn cmd_branch(
 
     println!(
         "{} {} {} {}@{}",
-        bold("branched"),
+        shell("branched"),
         bold(&branch.name),
         dim("from"),
         name,
@@ -487,7 +504,7 @@ fn cmd_checkout(repo: &Repo, reference: &str, directory: &Path) -> Result<ExitCo
     let t = tree::read(&step.state_root, &repo.store)?;
     println!(
         "{} {} file(s) from {name}@{index} into {}",
-        bold("checked out"),
+        shell("checked out"),
         t.entries.len(),
         directory.display()
     );
@@ -551,7 +568,7 @@ fn cmd_diff(repo: &Repo, a: &str, b: &str) -> Result<ExitCode> {
         .take_while(|((da, _), (db, _))| da == db)
         .count();
 
-    println!("{} {} {} {}", bold("DIFF"), a, dim("vs"), b);
+    println!("{} {} {} {}", shell("DIFF"), a, dim("vs"), b);
     println!(
         "  {:<16} {shared} step(s) {}",
         dim("shared prefix"),
@@ -605,7 +622,7 @@ fn cmd_diff(repo: &Repo, a: &str, b: &str) -> Result<ExitCode> {
 
 fn cmd_verify(repo: &Repo) -> Result<ExitCode> {
     let (count, bad) = repo.store.verify()?;
-    println!("{} {count} object(s)", bold("VERIFY"));
+    println!("{} {count} object(s)", shell("VERIFY"));
     if bad.is_empty() {
         println!(
             "  {} every object still hashes to its own name",
@@ -649,10 +666,11 @@ fn print_timeline(repo: &Repo, t: &Trajectory) -> Result<()> {
             (Action::Finish { .. }, _) => warn("✘"),
             _ => "●".to_string(),
         };
-        let delivery = notes
+        let delivery_label = notes
             .get(&step.index)
             .map(|n| n.delivery.label())
             .unwrap_or("-");
+        let delivery = palette::delivery(delivery_label);
         println!(
             "  {:>3} {} {:<52} {}",
             step.index,
@@ -758,18 +776,14 @@ fn ellipsise(text: &str, width: usize) -> String {
 }
 
 fn provenance_text(p: Provenance) -> String {
-    match p {
-        Provenance::Real => ok("real"),
-        Provenance::Live => "live".to_string(),
-        Provenance::Simulated => warn("simulated"),
-        Provenance::Unknown => warn("unknown"),
-    }
+    ink_provenance(p.label())
 }
 
 fn status_text(status: &str) -> String {
     match status {
         "success" => ok("success"),
-        "failure" => warn("failure"),
+        "failure" => bad("failure"),
+        "blocked" | "aborted" => warn(status),
         other => other.to_string(),
     }
 }
