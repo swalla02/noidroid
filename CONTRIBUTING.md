@@ -7,7 +7,7 @@ promise*, not about style. Style is enforced by CI; the rest is below.
 
 ```bash
 git switch -c feat/short-description        # or fix/, chore/, docs/, refactor/
-cargo test --all                            # 23 tests; browser ones skip without Chromium
+cargo test --all                            # 24 tests; browser ones skip without Chromium
 cargo fmt --all && cargo clippy --all-targets -- -D warnings
 git commit                                  # Conventional Commits, see below
 gh pr create --fill

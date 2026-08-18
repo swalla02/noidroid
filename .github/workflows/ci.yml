@@ -42,12 +42,12 @@ jobs:
           python -m pip install playwright
           python -m playwright install --with-deps chromium
       - name: Run every test, including the ones that drive a real browser
-        run: cargo test --all --verbose
+        run: cargo test --all --verbose -- --nocapture 2>&1 | tee test-output.txt
       - name: Fail if the browser tests silently skipped
         # The browser tests pass when Chromium is missing, by design. On this job it
         # is present, so a skip here would mean the suite is quietly not running.
         run: |
-          if cargo test --all 2>&1 | grep -q "SKIP: browser adapter test"; then
+          if grep -q "SKIP: browser adapter test" test-output.txt; then
             echo "::error::browser tests skipped on the job that installs a browser"
             exit 1
           fi

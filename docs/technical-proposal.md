@@ -514,7 +514,7 @@ build the products the trajectory graph makes possible.
 
 What follows is what exists and has been run, as opposed to what is planned above.
 
-**Built and verified** (23 tests: 10 unit, 11 end-to-end through a real subprocess, 2 driving real Chromium):
+**Built and verified** (24 tests: 11 unit, 11 end-to-end through a real subprocess, 2 driving real Chromium):
 
 | Claim | How it is checked |
 |---|---|
@@ -528,6 +528,7 @@ What follows is what exists and has been run, as opposed to what is planned abov
 | A changed program is reported, not papered over | `a_changed_program_is_reported_rather_than_papered_over` (key mismatch) and `an_unmediated_state_change_is_detected` (state mismatch) |
 | A branch is itself a trajectory | `a_branch_is_itself_a_trajectory_that_can_be_replayed` |
 | A replay is bounded by its recording | `an_injected_failure_stops_the_run_and_stays_stopped_on_replay` — found a real bug: a replay that outlived its recording used to start executing calls for real |
+| The on-disk object format cannot change unnoticed | `format_is_pinned` — asserts the exact serialised bytes and address of a known step, because an object's name *is* the hash of its bytes, so a silent format change would invalidate every recording ever made |
 
 **Deviations from the plan above**, all discovered while building:
 
