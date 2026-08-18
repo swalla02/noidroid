@@ -7,6 +7,26 @@ how the package version relates to `STEP_VERSION`, the on-disk object format.
 
 ## [Unreleased]
 
+### Fixed
+
+- A browser branch whose starting state could not be reproduced said so in the
+  terminal but recorded its observations as `live`, i.e. as things that really
+  happened. An unreproducible reconstruction now marks everything after it `unknown`,
+  which propagates to the head of the trajectory.
+
+### Added
+
+- `noidroid.Ungrounded`: a wrapper an adapter returns to say "here is a real value,
+  but it is not evidence about the original execution". The protocol gained `unknown`
+  on a result to carry it, which — like `unknown` on an error — is the only kind of
+  provenance claim a client may make, because it can only lose trust.
+- `Browser(strict=True)` refuses to continue from a state it could not reproduce,
+  instead of continuing and marking it unknown. Off by default: a page digest is an
+  exact comparison and real pages carry clocks, so a fatal default would refuse most
+  real branches.
+- A `/volatile` page in the example site whose rendered text comes from the clock, so
+  the boundary can be demonstrated rather than described.
+
 ## [0.1.0] - 2026-08-18
 
 First working prototype: an execution can be recorded, returned to, and branched.

@@ -285,6 +285,10 @@ cannot be vague about its own boundaries.
 - **A `--result` intervention on a browser observation desynchronises belief from
   page.** The agent is told something the page does not say; everything after is
   `simulated`.
+- **A page that cannot be reproduced is reported, not refused.** Page digests are
+  exact, and real pages carry clocks and session tokens, so a branch whose
+  reconstruction did not match carries on with everything after it marked `unknown`.
+  `Browser(strict=True)` turns that into a refusal instead.
 - **A replay reproduces that a call failed and with what message, not the original
   exception type.** A program that branches on exception class rather than on the
   failure itself will be reported as divergent.
@@ -313,7 +317,7 @@ and anything resembling a universal simulator.
 ## Development
 
 ```bash
-cargo test --all                # 24 tests: unit, end-to-end, and real-browser
+cargo test --all                # 25 tests: unit, end-to-end, and real-browser
 cargo clippy --all-targets
 
 # the browser tests need Chromium; they print SKIP and pass without it

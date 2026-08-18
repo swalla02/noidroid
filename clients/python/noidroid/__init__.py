@@ -48,6 +48,7 @@ __all__ = [
     "Divergence",
     "InjectedFailure",
     "Unavailable",
+    "Ungrounded",
     "READ",
     "WRITE",
     "IRREVERSIBLE",
@@ -78,6 +79,24 @@ class Divergence(NoidroidError):
 
 class InjectedFailure(NoidroidError):
     """A branch deliberately made this interaction fail."""
+
+
+class Ungrounded:
+    """Wraps a value that is real enough to use but not grounded in the recording.
+
+    Return this from a ``call``'s ``run`` when you produced a genuine value against an
+    environment you could not put back into its recorded state -- a browser whose page
+    did not come back the way the recording says it looked, say. The step is then
+    marked ``unknown``, which propagates to everything downstream, instead of claiming
+    to be evidence about the original execution.
+
+    The caller still receives the plain value; only its provenance changes.
+    """
+
+    __slots__ = ("value",)
+
+    def __init__(self, value):
+        self.value = value
 
 
 class Unavailable(NoidroidError):
@@ -159,7 +178,10 @@ class Session:
                     }
                 )
                 raise
-            self._rpc({"op": "result", "value": value})
+            ungrounded = isinstance(value, Ungrounded)
+            if ungrounded:
+                value = value.value
+            self._rpc({"op": "result", "value": value, "unknown": ungrounded})
             return value
         if directive == "use":
             return response.get("value")
