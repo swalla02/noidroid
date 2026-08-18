@@ -367,7 +367,14 @@ impl<'a> Session<'a> {
                 choice,
             } => self.on_decide(name, options, choice),
             Request::CallResult { value } => self.on_result(value),
-            Request::CallError { message } => self.on_result(json!({ "error": message })),
+            Request::CallError { message, unknown } => {
+                if unknown {
+                    if let Some(pending) = self.pending.as_mut() {
+                        pending.provenance = Provenance::Unknown;
+                    }
+                }
+                self.on_result(json!({ "error": message }))
+            }
             Request::Finish { status, result } => {
                 let action = Action::Finish {
                     status: status.clone(),

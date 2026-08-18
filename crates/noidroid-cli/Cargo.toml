@@ -1,6 +1,6 @@
 [package]
 name = "noidroid-cli"
-description = "Command line interface for Noidroid."
+description = "Command line interface for Paranoid Android."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

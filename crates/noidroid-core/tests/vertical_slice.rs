@@ -32,13 +32,23 @@ def touch(tag):
         handle.write(tag + "\n")
     return {"tag": tag}
 
-nd.call("world.read", lambda: touch("read"), args={"variant": variant})
-
-# Unmediated application state: noidroid re-derives this by re-running the program.
+# Unmediated application state, captured by the next step's snapshot and therefore
+# genuinely verified on replay rather than restored.
 with open("notes.txt", "w", encoding="utf-8") as handle:
     handle.write(note)
 
+nd.call("world.read", lambda: touch("read"), args={"variant": variant})
+
+# A mediated write, so replaying this step restores the workspace underneath a
+# process that is still running in it.
+nd.call("world.stage", lambda: touch("stage"), args={}, effect="write")
+
 choice = nd.decide("pick", options=["a", "b"], choice="a")
+
+# Written with a relative path, after that restore. If the restore replaced the
+# working directory instead of its contents, this lands in a deleted inode.
+with open("after.txt", "w", encoding="utf-8") as handle:
+    handle.write(choice)
 
 if choice == "a":
     try:
@@ -252,7 +262,7 @@ fn a_branch_shares_its_parents_prefix_and_cannot_change_it() {
     let parent_workspace_before =
         fs::read_to_string(f.repo.workspace_dir("run-1").join("notes.txt")).unwrap();
 
-    let at = 2; // the declared decision
+    let at = 3; // the declared decision
     let report = engine::run(
         &f.repo,
         &f.spec(Some("alt-1"), &[]),
@@ -310,7 +320,7 @@ fn provenance_never_improves_downstream() {
         &f.repo,
         &f.spec(Some("alt-prov"), &[]),
         Mode::Branch {
-            at: 2,
+            at: 3,
             intervention: Intervention::ReplaceDecision {
                 name: "pick".into(),
                 value: serde_json::json!("b"),
@@ -387,7 +397,7 @@ fn a_branch_is_itself_a_trajectory_that_can_be_replayed() {
         &f.repo,
         &f.spec(Some("alt-1"), &[]),
         Mode::Branch {
-            at: 2,
+            at: 3,
             intervention: Intervention::ReplaceDecision {
                 name: "pick".into(),
                 value: serde_json::json!("b"),
@@ -454,5 +464,43 @@ fn an_injected_failure_stops_the_run_and_stays_stopped_on_replay() {
         f.witness_lines(),
         witness_before,
         "a replay must never execute past the end of what it is reproducing"
+    );
+}
+
+#[test]
+fn a_restore_does_not_pull_the_working_directory_out_from_under_the_program() {
+    let f = Fixture::new("cwd");
+    let parent = f.record();
+
+    // Branch after a mediated write, so the prefix reconstruction restores the
+    // workspace while the program is still running inside it.
+    let branch = engine::run(
+        &f.repo,
+        &f.spec(Some("alt-cwd"), &[]),
+        Mode::Branch {
+            at: 3,
+            intervention: Intervention::ReplaceDecision {
+                name: "pick".into(),
+                value: serde_json::json!("b"),
+            },
+            simulate: BTreeMap::new(),
+        },
+        Some(&parent),
+    )
+    .unwrap()
+    .trajectory
+    .unwrap();
+
+    let head = f.repo.chain(&branch).unwrap();
+    let tree =
+        noidroid_core::tree::read(&head.last().unwrap().1.state_root, &f.repo.store).unwrap();
+    let paths: Vec<&str> = tree.entries.iter().map(|e| e.path.as_str()).collect();
+    assert!(
+        paths.contains(&"after.txt"),
+        "a file the program wrote after the restore must still be in the workspace, got {paths:?}"
+    );
+    assert_eq!(
+        fs::read_to_string(f.repo.workspace_dir("alt-cwd").join("after.txt")).unwrap(),
+        "b"
     );
 }

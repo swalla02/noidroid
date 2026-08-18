@@ -1,4 +1,4 @@
-//! Noidroid core: an immutable, content-addressed trajectory engine.
+//! Paranoid Android core: an immutable, content-addressed trajectory engine.
 //!
 //! The primitive is a [`model::Step`]: `(parent, action, effects, state_root,
 //! provenance)`, addressed by the hash of its content. A trajectory is a chain of

@@ -1,4 +1,4 @@
-"""Noidroid client for Python.
+"""Paranoid Android client for Python.
 
 Standard library only, no dependencies, and small enough to reimplement in any
 language in an afternoon -- which is the point. The integration contract is the
@@ -47,6 +47,7 @@ __all__ = [
     "Denied",
     "Divergence",
     "InjectedFailure",
+    "Unavailable",
     "READ",
     "WRITE",
     "IRREVERSIBLE",
@@ -77,6 +78,16 @@ class Divergence(NoidroidError):
 
 class InjectedFailure(NoidroidError):
     """A branch deliberately made this interaction fail."""
+
+
+class Unavailable(NoidroidError):
+    """The information could not be obtained at all.
+
+    Raise this from a ``call``'s ``run`` when the interaction could not be carried
+    out for want of something nobody recorded -- an adapter that needed a page the
+    recording never visited, say. The step is then marked ``unknown`` rather than
+    passed off as something that really happened.
+    """
 
 
 class Session:
@@ -133,7 +144,13 @@ class Session:
             try:
                 value = run()
             except Exception as exc:  # the world failed; record that it did
-                self._rpc({"op": "error", "message": f"{type(exc).__name__}: {exc}"})
+                self._rpc(
+                    {
+                        "op": "error",
+                        "message": f"{type(exc).__name__}: {exc}",
+                        "unknown": isinstance(exc, Unavailable),
+                    }
+                )
                 raise
             self._rpc({"op": "result", "value": value})
             return value

@@ -33,9 +33,15 @@ pub enum Request {
     /// The value produced by an interaction the engine told us to execute.
     #[serde(rename = "result")]
     CallResult { value: Value },
-    /// The interaction the engine told us to execute raised.
+    /// The interaction the engine told us to execute raised. `unknown` means the
+    /// client could not obtain the information at all -- the only provenance claim a
+    /// client may make, because it is the one that can only lose trust, never gain it.
     #[serde(rename = "error")]
-    CallError { message: String },
+    CallError {
+        message: String,
+        #[serde(default)]
+        unknown: bool,
+    },
     /// A declared decision point: the choice the application would make, and what
     /// else it considered. Declaring it is what makes the action branchable.
     Decide {

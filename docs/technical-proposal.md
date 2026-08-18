@@ -1,4 +1,4 @@
-# Noidroid — Technical Proposal
+# Paranoid Android — Technical Proposal
 
 **Status:** accepted for v0 · **Audience:** engineers building or evaluating the core
 **Companion document:** [`manifesto.md`](../manifesto.md) (vision). This document does not restate it.
@@ -38,7 +38,7 @@ reconstructible when the *non-deterministic inputs crossing the application/worl
 recorded and can be re-served. This is how `rr`, Temporal, Antithesis and every durable-execution
 engine actually work.
 
-That requires the application to route its side effects through a client. So Noidroid is
+That requires the application to route its side effects through a client. So Paranoid Android is
 **low-code, not zero-code**, and we say so in the README rather than implying otherwise. The
 integration cost we are willing to impose is exactly one line per external interaction, and the
 design rule from the vision still binds: every integration requirement must pay for itself in
@@ -132,7 +132,7 @@ trajectory graph is a Merkle DAG, and everything the vision asks for falls out o
 | Trajectories are exportable | Objects are canonical JSON. `cat` and `jq` work. |
 
 This is deliberately git's data model. Git solved "immutable history with cheap branching" and we
-should not re-solve it; the novelty in Noidroid is not the store, it is *what is committed* (world
+should not re-solve it; the novelty in Paranoid Android is not the store, it is *what is committed* (world
 interactions and their provenance) and *what commit means* (a re-executable checkpoint).
 
 **Consequence for hashing:** the hashed object must contain only semantic content. Wall-clock time,
@@ -143,7 +143,7 @@ no replay could ever reproduce a hash and the entire verification story would co
 
 ## 3. Execution and state model
 
-An execution is a mediated dialogue between an application and the Noidroid engine, over a
+An execution is a mediated dialogue between an application and the Paranoid Android engine, over a
 line-delimited JSON protocol on a Unix socket. The engine drives; the application asks permission.
 
 ```
@@ -177,7 +177,7 @@ State is split by who owns it, because the two halves have very different recons
 | State | Owner | How it is captured | How it is restored |
 |---|---|---|---|
 | Application-internal (heap, control flow, agent memory) | the app | **not captured** | rebuilt by deterministic re-execution |
-| World-facing (workspace files, tool responses, clock, randomness) | Noidroid | recorded as effects + a Merkle tree of the workspace | re-served from the store |
+| World-facing (workspace files, tool responses, clock, randomness) | Paranoid Android | recorded as effects + a Merkle tree of the workspace | re-served from the store |
 
 We never claim to snapshot the first column. We snapshot the second, and we *verify* that the first
 one reconstructed correctly by checking that the app produced the same actions and the same
@@ -364,7 +364,36 @@ release coupling.
 
 Where an environment *can* be captured from the outside (a browser via CDP, a Gym env via its step
 function, a container via its filesystem), that becomes an adapter that speaks the same protocol on
-the application's behalf. We build zero of those in v0.
+the application's behalf.
+
+### The browser adapter (built)
+
+The browser is the environment where "reconstruct the state" is least fakeable: a DOM, a JavaScript
+heap, cookies and live connections cannot be snapshotted and put back. So the adapter applies the
+same principle as the core, one level down:
+
+| Level | Not snapshotted | Reconstructed by | Oracle |
+|---|---|---|---|
+| application | heap, control flow | re-running the program | recorded mediated calls |
+| browser | DOM, JS heap, cookies | re-driving recorded actions | recorded HTTP responses |
+
+Two layers, both recorded: browser **actions** (`goto`, `click`, `fill`, `scrape`) become branchable
+steps; HTTP **responses** become the oracle that makes re-driving deterministic. Crossing a
+divergence point launches a fresh browser, re-drives the recorded prefix into it, and **verifies the
+result** by comparing a page digest with the recording — the browser equivalent of the engine's hash
+equality check.
+
+Everything the adapter stores — the action log, recorded responses, screenshots — lives in the
+workspace, so it is content-addressed, de-duplicated and shared between branches by the mechanisms
+that already exist. The adapter has no storage of its own, and required **no change to
+`noidroid-core`**: it is an ordinary client of the same protocol, which is the strongest available
+evidence that the core really is environment-agnostic.
+
+Its boundary is sharp and worth stating: a branch that navigates somewhere the recording never went
+needs the live network. That is refused by default and reported as `unknown` — a counterfactual is
+not licence to start browsing the real internet.
+
+Still unbuilt: a plain HTTP adapter, Gym/RL, containers, robotics.
 
 ---
 
@@ -485,7 +514,7 @@ build the products the trajectory graph makes possible.
 
 What follows is what exists and has been run, as opposed to what is planned above.
 
-**Built and verified** (18 tests: 9 unit, 9 end-to-end through a real subprocess):
+**Built and verified** (22 tests: 10 unit, 10 end-to-end through a real subprocess, 2 driving real Chromium):
 
 | Claim | How it is checked |
 |---|---|
@@ -515,6 +544,28 @@ What follows is what exists and has been run, as opposed to what is planned abov
    is not captured. This is a real limitation, not a convenience: a replay depends on
    the environment being unchanged, and says so when it is not.
 
-**Not built, and not pretended:** any adapter beyond the Python client, snapshot
+### Second slice: the browser adapter
+
+| Claim | How it is checked |
+|---|---|
+| A browser session reconstructs from recorded responses alone | `a_browser_session_reconstructs_from_recorded_responses_alone` — records against a live site, **shuts the site down**, then branches; the prefix is re-driven into a fresh browser and the page digest matches |
+| Running out of recorded knowledge is `unknown`, not `live` | same test — the first unrecorded page ends the branch with `Provenance::Unknown` and outcome `blocked` |
+| A browser branch can reach a different outcome | `a_browser_branch_can_reach_a_different_outcome` — the counterfactual books an available flight and succeeds, head provenance `simulated`, parent unchanged |
+
+Two further findings from building it:
+
+4. **`tree::materialize` was unlinking the workspace directory** and recreating it, while the
+   recorded process was still running with that directory as its working directory. The child was
+   left holding a deleted inode, and every relative path it touched afterwards vanished. The
+   adapter surfaced it because a browser run restores state mid-flight far more often than the
+   first example did. Now the directory's *contents* are pruned and the directory itself is kept
+   (`materialize_keeps_the_directory_itself`, plus an end-to-end regression test). This was a
+   correctness bug in the core, found by an adapter that touched it harder.
+5. **A client needs a way to say "I could not obtain this."** Without one, an adapter that ran out
+   of recorded knowledge had its failure recorded as a `live` value — a real thing that happened —
+   when the truth was that nothing happened at all. The protocol now accepts `unknown` on an error,
+   the only provenance claim a client may make, because it is the one that can only lose trust.
+
+**Not built, and not pretended:** any adapter beyond the Python client and the browser, snapshot
 fast-paths, concurrency support, detection of effects outside the workspace, storage
 packing or GC, Windows support, and every product in §13 beyond the first slice.

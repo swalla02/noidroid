@@ -2,8 +2,11 @@
 /target/
 **/*.rs.bk
 
-# Noidroid repositories (recorded trajectories, workspaces, logs)
+# Paranoid Android repositories (recorded trajectories, workspaces, logs)
 .noidroid/
+
+# Browser adapter artifacts, if an example is run outside `noidroid run`
+/browser/
 
 # Python
 __pycache__/

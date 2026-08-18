@@ -16,4 +16,4 @@ noidroid diff run-1 alt-1
 
 `world.py` is deliberately deterministic and local. `world.charge` stands in for the
 class of effects that leave the sandbox: the agent declares it irreversible, and
-noidroid refuses to perform it in any run that is not the original recording.
+Paranoid Android refuses to perform it in any run that is not the original recording.

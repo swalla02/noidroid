@@ -1,8 +1,10 @@
 <div align="center">
 
-# Noidroid
+# Paranoid Android
 
 **Record an execution. Return to a point inside it. Explore what could have happened instead.**
+
+`noidroid` — the command you type
 
 </div>
 
@@ -12,10 +14,13 @@ An autonomous system runs, does something wrong, and ends. What survives is a pi
 logs: evidence that something happened, with no way to stand inside the moment it
 happened and try again.
 
-Noidroid records an execution as an immutable, content-addressed **trajectory**, can
-return to any checkpoint inside it, and can run a **branch** from there where one
+Paranoid Android records an execution as an immutable, content-addressed **trajectory**,
+can return to any checkpoint inside it, and can run a **branch** from there where one
 thing is different. The original is never modified — a branch is a new experiment
 that shares its parent's history object-for-object.
+
+The project is **Paranoid Android**. Its command-line interface, and the crates and
+packages that implement it, are `noidroid` — the contraction you actually type.
 
 ```
         record              checkpoint                branch
@@ -25,9 +30,9 @@ that shares its parent's history object-for-object.
   └──────────────┘      └──────────────┘      └──────────────────┘
 ```
 
-**Status: working prototype.** It does what this page says it does, on one kind of
-program, and it is explicit about where its knowledge stops. See
-[Limitations](#limitations).
+**Status: working prototype.** It does what this page says it does — for
+instrumented Python programs and for real browser sessions — and it is explicit
+about where its knowledge stops. See [Limitations](#limitations).
 
 ---
 
@@ -94,7 +99,7 @@ Two things to notice, because they are the whole point:
   happens in a branch.
 - **Nothing claims to be real that isn't.** The branch reached `success`, and it says
   plainly that the success rests on two simulated values. Without `--simulate`,
-  `payments.charge` is refused outright — Noidroid will not spend money on a
+  `payments.charge` is refused outright — Paranoid Android will not spend money on a
   counterfactual's behalf.
 
 ```console
@@ -110,6 +115,40 @@ $ noidroid diff run-1 alt-fl203
   provenance       real → simulated
   workspace        + booking.json
 ```
+
+---
+
+## The same thing in a real browser
+
+The adapter in `noidroid.browser` drives Chromium through Playwright. It applies the
+core's principle one level down: a browser's DOM and JavaScript heap cannot be
+snapshotted, so they are **re-derived** — recorded actions are re-driven into a fresh
+browser while every HTTP response is served from the recording.
+
+Which means a branch can reconstruct a browser session with the website switched off:
+
+```console
+$ kill %1                                    # take the site away
+$ noidroid branch web-1@3 --decide pick_flight=FL-203
+
+│ [noidroid.browser] reconstructed 2 browser action(s), 2 recorded response(s)
+│                    re-served; page state verified
+│ stopped: browser.goto needed http://…/flight/FL-203, which this recording does
+│          not contain; allow_network=True would fetch it live
+
+    3 ◆ decide pick_flight = "FL-203"                simulated intervened
+    4 ● call browser.goto({"url":"http://…/FL-203"}) unknown   executed
+    5 ✘ finish blocked                               unknown   executed
+```
+
+The reconstruction is verified by comparing the page digest with the recording. Then
+the branch reaches a page the recording never visited and stops, marking it `unknown`
+instead of inventing what it would have said. Allowing the live network
+(`NOIDROID_BROWSER_ALLOW_NETWORK=1`) lets the counterfactual go further and reach
+`success` — labelled `2 real, 5 live, 1 simulated`, because that is what it rests on.
+
+See [`examples/browser_agent/`](examples/browser_agent/README.md). The adapter needed
+**no changes to `noidroid-core`**: it is an ordinary client of the same protocol.
 
 ---
 
@@ -170,6 +209,18 @@ The client is one dependency-free file speaking newline-delimited JSON over a Un
 socket. That protocol, not the Python package, is the integration contract — a client
 for another language is an afternoon's work.
 
+For browsers, `noidroid.browser.Browser` wraps a Playwright page and does the
+mediating for you:
+
+```python
+from noidroid.browser import Browser
+
+browser = Browser(noidroid.connect())
+browser.goto(url, wait_for="#results")
+rows = browser.scrape("tr.flight", ["data-id", "data-price"])["data"]
+pick = browser.decide("pick_flight", options=[r["data-id"] for r in rows], choice=rows[0]["data-id"])
+```
+
 ---
 
 ## How it works
@@ -225,8 +276,15 @@ cannot be vague about its own boundaries.
   packages and the program's own source are assumed unchanged; a replay from a
   different directory or a modified script will diverge (loudly).
 - **A branch is not a prediction.** Past the divergence point, `live` calls query a
-  world that has moved on. Noidroid tells you what happens now from that state — not
+  world that has moved on. Paranoid Android tells you what happens now from that state — not
   what would have happened then.
+- **Browser reconstruction is bounded by the recorded page set.** A branch that
+  navigates somewhere the recording never went needs the live network, which is
+  refused by default and labelled `live` when allowed. Reaching the site again is not
+  the same as the site being unchanged.
+- **A `--result` intervention on a browser observation desynchronises belief from
+  page.** The agent is told something the page does not say; everything after is
+  `simulated`.
 - **No scale work.** No packing, no garbage collection, no remote store, no large
   artifact handling. Unix sockets only, so Linux and macOS but not Windows.
 
@@ -235,6 +293,7 @@ cannot be vague about its own boundaries.
 ## Roadmap
 
 1. **An HTTP/tool adapter**, so common boundaries need no per-call instrumentation.
+   (The browser adapter is built; a plain HTTP one is the next-largest boundary.)
 2. **Detecting unmediated effects beyond the workspace** — closing the honesty gap
    the third limitation names.
 3. **A snapshot fast-path** (container or process image) behind the same checkpoint
@@ -243,16 +302,19 @@ cannot be vague about its own boundaries.
 5. **Dataset export** — declared decision points already carry
    `(state, action, alternatives, outcome)`.
 
-Deliberately unbuilt for now: a dashboard, a browser adapter, distributed storage, an
-agent framework, and anything resembling a universal simulator.
+Deliberately unbuilt for now: a dashboard, distributed storage, an agent framework,
+and anything resembling a universal simulator.
 
 ---
 
 ## Development
 
 ```bash
-cargo test                      # 18 tests: unit + end-to-end through a real subprocess
+cargo test                      # 22 tests: unit, end-to-end, and real-browser
 cargo clippy --all-targets
+
+# the browser tests need Chromium; they print SKIP and pass without it
+pip install playwright && playwright install chromium
 ```
 
 The end-to-end tests drive a real Python child process through the real protocol,
@@ -262,8 +324,9 @@ mutate its parent* — are claims about what happens between processes.
 ```
 crates/noidroid-core/   objects, store, workspace trees, the record/replay/branch engine
 crates/noidroid-cli/    the `noidroid` binary
-clients/python/         the client (one file, stdlib only)
+clients/python/         the client (stdlib only) and the browser adapter
 examples/flight_agent/  the example above
+examples/browser_agent/ the same idea driving real Chromium
 docs/                   technical proposal
 manifesto.md            the product vision this is built toward
 ```

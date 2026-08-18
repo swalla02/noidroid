@@ -1,6 +1,6 @@
 //! Content addressing.
 //!
-//! Every immutable object in Noidroid is named by the BLAKE3 hash of its canonical
+//! Every immutable object in Paranoid Android is named by the BLAKE3 hash of its canonical
 //! bytes. Names are derived from content, never assigned, which is what makes
 //! "history is immutable" a structural property rather than a promise.
 

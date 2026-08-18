@@ -5,7 +5,7 @@
 //! cannot: a cheap, comparable address for "the state at step k", which is what turns
 //! reconstruction from a claim into a check.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -59,12 +59,19 @@ fn collect(root: &Path, dir: &Path, store: &Store, out: &mut Vec<TreeEntry>) -> 
 }
 
 /// Write a recorded tree into a directory, removing anything that is not part of it.
+///
+/// The directory itself is never removed and recreated, only its contents. That is
+/// not a detail: this runs *while the recorded process is alive and using the
+/// directory as its working directory*. Unlinking it would leave the child holding a
+/// deleted inode, and every relative path it touched afterwards would silently land
+/// in a directory nobody can see.
 pub fn materialize(digest: &Digest, store: &Store, dir: &Path) -> Result<()> {
     let tree: Tree = store.get_json(digest)?;
-    if dir.exists() {
-        fs::remove_dir_all(dir)?;
-    }
     fs::create_dir_all(dir)?;
+
+    let wanted: BTreeSet<PathBuf> = tree.entries.iter().map(|e| dir.join(&e.path)).collect();
+    prune(dir, &wanted)?;
+
     for entry in &tree.entries {
         let path = dir.join(&entry.path);
         if let Some(parent) = path.parent() {
@@ -74,6 +81,28 @@ pub fn materialize(digest: &Digest, store: &Store, dir: &Path) -> Result<()> {
         fs::set_permissions(&path, fs::Permissions::from_mode(entry.mode))?;
     }
     Ok(())
+}
+
+/// Remove everything under `dir` that the tree does not contain, leaving `dir` itself
+/// in place. Returns whether the directory ended up empty.
+fn prune(dir: &Path, wanted: &BTreeSet<PathBuf>) -> Result<bool> {
+    let mut empty = true;
+    for entry in fs::read_dir(dir)? {
+        let path = entry?.path();
+        let meta = fs::symlink_metadata(&path)?;
+        if meta.is_dir() && !meta.file_type().is_symlink() {
+            if prune(&path, wanted)? {
+                fs::remove_dir(&path)?;
+            } else {
+                empty = false;
+            }
+        } else if wanted.contains(&path) {
+            empty = false;
+        } else {
+            fs::remove_file(&path)?;
+        }
+    }
+    Ok(empty)
 }
 
 pub fn read(digest: &Digest, store: &Store) -> Result<Tree> {
@@ -142,6 +171,33 @@ mod tests {
         );
         // 2 blobs + 1 tree: the second directory added nothing to the store.
         assert_eq!(store.object_count().unwrap(), 3);
+        fs::remove_dir_all(base).ok();
+    }
+
+    #[test]
+    fn materialize_keeps_the_directory_itself() {
+        use std::os::unix::fs::MetadataExt;
+
+        let base = tmp("inode");
+        let store = Store::open(base.join("objects")).unwrap();
+        let src = base.join("src");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("a.txt"), b"a").unwrap();
+        let digest = snapshot(&src, &store).unwrap();
+
+        let dst = base.join("dst");
+        fs::create_dir_all(&dst).unwrap();
+        let before = fs::metadata(&dst).unwrap().ino();
+        materialize(&digest, &store, &dst).unwrap();
+        let after = fs::metadata(&dst).unwrap().ino();
+
+        // A recorded process is using this directory as its working directory while
+        // we restore into it. Replacing the directory would strand it on a deleted
+        // inode, and every relative path it wrote afterwards would vanish.
+        assert_eq!(
+            before, after,
+            "the workspace directory must survive a restore"
+        );
         fs::remove_dir_all(base).ok();
     }
 
