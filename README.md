@@ -380,7 +380,7 @@ and anything resembling a universal simulator.
 ## Development
 
 ```bash
-cargo test --all                # 32 tests: unit, end-to-end, and real-browser
+cargo test --all                # 33 tests: unit, end-to-end, and real-browser
 cargo clippy --all-targets
 
 # the browser tests need Chromium; they print SKIP and pass without it

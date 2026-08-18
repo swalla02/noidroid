@@ -369,7 +369,7 @@ fn handle(app: &mut App, code: KeyCode) -> bool {
                 picker.selected = picker.selected.saturating_sub(1);
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                picker.selected = (picker.selected + 1).min(picker.options.len() - 1);
+                picker.selected = (picker.selected + 1).min(picker.options.len().saturating_sub(1));
             }
             KeyCode::Enter => {
                 let decision = picker.decision.clone();
@@ -403,7 +403,9 @@ fn handle(app: &mut App, code: KeyCode) -> bool {
                 app.step = (app.step + 1).min(app.chain.len().saturating_sub(1));
             }
             Focus::Trajectories => {
-                app.trajectory = (app.trajectory + 1).min(app.trajectories.len() - 1);
+                // Saturating: an empty list would underflow, and the list is only
+                // guaranteed non-empty at startup, not after a reload.
+                app.trajectory = (app.trajectory + 1).min(app.trajectories.len().saturating_sub(1));
                 app.step = 0;
                 let _ = app.load();
             }

@@ -540,3 +540,48 @@ fn a_recorded_failure_is_reproduced_as_a_failure() {
     );
     assert_eq!(report.steps, branch.steps);
 }
+
+#[test]
+fn a_branch_from_an_unreachable_checkpoint_leaves_nothing_behind() {
+    let f = Fixture::new("unreachable");
+    let parent = f.record();
+
+    // Same program, different behaviour, so the prefix cannot be reconstructed. The
+    // branch has to be refused — and refusing it has to mean nothing was written,
+    // not merely that the caller was told.
+    let report = engine::run(
+        &f.repo,
+        &f.spec(Some("alt-unreachable"), &[("VARIANT", "b")]),
+        Mode::Branch {
+            at: 3,
+            intervention: Intervention::ReplaceDecision {
+                name: "pick".into(),
+                value: serde_json::json!("b"),
+            },
+            simulate: BTreeMap::new(),
+        },
+        Some(&parent),
+    )
+    .expect("the run itself completes; it is the branch that is refused");
+
+    assert!(
+        report.divergences.iter().any(|d| d.index < 3),
+        "the prefix should have diverged, got {:?}",
+        report.divergences
+    );
+    assert!(
+        report.trajectory.is_none(),
+        "a branch whose checkpoint could not be reached is not a trajectory"
+    );
+    assert!(
+        f.repo.load_trajectory("alt-unreachable").is_err(),
+        "nothing may be left on disk claiming an ancestry it does not have"
+    );
+    assert!(
+        !f.repo.workspace_dir("alt-unreachable").exists(),
+        "its workspace should be gone too"
+    );
+
+    // The parent is exactly as it was.
+    assert_eq!(f.repo.load_trajectory("run-1").unwrap(), parent);
+}
