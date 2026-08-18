@@ -1,0 +1,273 @@
+<div align="center">
+
+# Noidroid
+
+**Record an execution. Return to a point inside it. Explore what could have happened instead.**
+
+</div>
+
+---
+
+An autonomous system runs, does something wrong, and ends. What survives is a pile of
+logs: evidence that something happened, with no way to stand inside the moment it
+happened and try again.
+
+Noidroid records an execution as an immutable, content-addressed **trajectory**, can
+return to any checkpoint inside it, and can run a **branch** from there where one
+thing is different. The original is never modified — a branch is a new experiment
+that shares its parent's history object-for-object.
+
+```
+        record              checkpoint                branch
+  ┌──────────────┐      ┌──────────────┐      ┌──────────────────┐
+  │  execution   │ ───▶ │  trajectory  │ ───▶ │   alternative    │
+  │  (happened)  │      │  (immutable) │      │  (counterfactual)│
+  └──────────────┘      └──────────────┘      └──────────────────┘
+```
+
+**Status: working prototype.** It does what this page says it does, on one kind of
+program, and it is explicit about where its knowledge stops. See
+[Limitations](#limitations).
+
+---
+
+## The example, end to end
+
+An agent books the cheapest flight under €800. The cheapest flight has no seats. It
+gives up.
+
+```console
+$ noidroid run -- python3 examples/flight_agent/agent.py
+│ found 3 flights under 800
+│ chose FL-101
+│ FL-101 has no seats left; giving up
+
+recorded run-1
+    0 ● genesis                                     real      executed   2219c2d195
+    1 ● call flights.search({"max_price":800})      real      executed   4ffc976f16
+    2 ● decide pick_flight = "FL-101"               real      executed   733b08d1b9
+    3 ● call flights.seatmap({"flight":"FL-101"})   real      executed   95a6d43d5b
+    4 ✘ finish failure                              real      executed   c2781fcaa9
+```
+
+Step 2 is where it chose. Stand there and look:
+
+```console
+$ noidroid show run-1@2
+CHECKPOINT run-1@2
+  action       decide pick_flight = "FL-101"
+  options      ["FL-101","FL-203","FL-311"]
+  provenance   real
+  state        1 file(s) root 367c26441d
+               · notes/candidates.json
+
+  EXPLORE FROM HERE
+    noidroid branch run-1@2 --decide pick_flight=FL-203
+    → what if it had chosen differently?
+```
+
+Take the other path:
+
+```console
+$ noidroid branch run-1@2 --decide pick_flight=FL-203 \
+      --simulate 'payments.charge={"status":"charged"}'
+
+branched alt-1 from run-1@2
+  intervention replace-decision pick_flight = "FL-203"
+  prefix       2 step(s) shared with run-1 — identical objects, stored once
+
+    0 ● genesis                                     real      replayed   2219c2d195
+    1 ● call flights.search({"max_price":800})      real      replayed   4ffc976f16
+    2 ◆ decide pick_flight = "FL-203"               simulated intervened 3a39a969ff
+    3 ● call flights.seatmap({"flight":"FL-203"})   simulated executed   55e9522ae0
+    4 ● call flights.book({"flight":"FL-203",…})    simulated executed   45b45b70ce
+    5 ● call payments.charge({"amount":680,…})      simulated intervened 3e75ce19c9
+    6 ✔ finish success                              simulated executed   fecf1e4b34
+
+  values by provenance   1 real, 2 live, 2 simulated
+```
+
+Two things to notice, because they are the whole point:
+
+- **Steps 0 and 1 have the same addresses in both trajectories.** The prefix is not
+  copied, it *is* the parent's prefix. `run-1` cannot be altered by anything that
+  happens in a branch.
+- **Nothing claims to be real that isn't.** The branch reached `success`, and it says
+  plainly that the success rests on two simulated values. Without `--simulate`,
+  `payments.charge` is refused outright — Noidroid will not spend money on a
+  counterfactual's behalf.
+
+```console
+$ noidroid tree
+run-1 failure 5 steps
+  ├─ @2 alt-fl203 success  replace-decision pick_flight = "FL-203"
+  └─ @3 alt-seats success  replace-result {"flight":"FL-101","seats_left":2}
+
+$ noidroid diff run-1 alt-fl203
+  shared prefix    2 step(s) — the same objects, not copies
+  diverged at      @2 replace-decision pick_flight = "FL-203"
+  outcome          failure → success
+  provenance       real → simulated
+  workspace        + booking.json
+```
+
+---
+
+## Quickstart
+
+Requires Rust ≥ 1.74, Python ≥ 3.9, Linux or macOS.
+
+```bash
+git clone https://github.com/swalla02/noidroid && cd noidroid
+cargo build --release
+export PATH=$PWD/target/release:$PATH
+export PYTHONPATH=$PWD/clients/python        # or: pip install -e clients/python
+
+noidroid run -- python3 examples/flight_agent/agent.py
+noidroid show run-1@2
+noidroid branch run-1@2 --decide pick_flight=FL-203 --simulate 'payments.charge={"ok":true}'
+noidroid diff run-1 alt-1
+```
+
+| Command | |
+|---|---|
+| `noidroid run -- <cmd>` | run a program and record its trajectory |
+| `noidroid log [<traj>]` | list trajectories, or show one as a timeline |
+| `noidroid show <traj>@<step>` | inspect a checkpoint and how to explore from it |
+| `noidroid replay <traj>` | re-derive a trajectory and check it still hashes the same |
+| `noidroid branch <traj>@<step>` | diverge: `--decide`, `--result` or `--fail` |
+| `noidroid checkout <traj>@<step> <dir>` | write out the workspace as it was |
+| `noidroid tree` · `diff` · `verify` | the branch graph, a comparison, a store integrity check |
+
+---
+
+## Integrating your own program
+
+Three declarations. Everything else is your code, unchanged.
+
+```python
+import noidroid
+
+nd = noidroid.connect()      # a pass-through when not running under `noidroid run`
+
+data = nd.call("api.search", lambda: requests.get(url).json(), args={"url": url})
+pick = nd.decide("choice", options=candidates, choice=candidates[0])
+nd.call("payments.charge", lambda: charge(pick), effect=noidroid.IRREVERSIBLE)
+nd.finish("success", {"picked": pick})
+```
+
+| Declaration | What it buys you |
+|---|---|
+| `call(target, run, effect=…)` | recorded, replayed instead of re-executed, and branchable |
+| `decide(name, options, choice)` | the *choice* becomes branchable |
+| `finish(status, result)` | the trajectory has an outcome worth comparing |
+
+`run` is invoked **only** when the engine says so, and during replay it never does.
+That is why a replay cannot touch the world: the guarantee lives in the protocol, not
+in anyone's discipline.
+
+The client is one dependency-free file speaking newline-delimited JSON over a Unix
+socket. That protocol, not the Python package, is the integration contract — a client
+for another language is an afternoon's work.
+
+---
+
+## How it works
+
+**A checkpoint is not a snapshot of memory.** Returning to step *k* means re-executing
+steps 0..*k* with every mediated input served from the recording, and letting the
+program rebuild its own internal state. Restoring an arbitrary process image portably
+is not something anyone can do honestly; re-execution is.
+
+**Reconstruction is verified, not asserted.** Steps are content-addressed, so a
+faithful replay re-derives *the same objects*. `noidroid replay` reports
+`5/5 identical objects` or tells you exactly which step stopped matching and why
+(`key_mismatch`, `state_mismatch`, `unexpected_call`, `truncated`).
+
+**Branching is the data model, not a feature.** A step is
+`(parent, action, effects, state_root, provenance)`, addressed by its hash. A branch
+is a step whose parent belongs to another trajectory. Immutable history, shared
+prefixes and copy-on-write all fall out of that; identical files and tool responses
+are stored once.
+
+**Two kinds of honesty are tracked separately.** *Provenance* is a property of
+content and is part of the hash — `real` ⊑ `live` ⊑ `simulated` ⊑ `unknown`, joined
+along the chain so it can never improve downstream. *Delivery* is how this run got a
+value — `executed`, `replayed`, `intervened`, `denied` — and is deliberately not
+hashed, so a faithful replay produces the same objects as the run it reproduces.
+
+**Irreversible effects fail safe.** Declaring an effect `irreversible` means it is
+performed only during an original recording. Every replay and every branch refuses it
+unless you explicitly supply a stated-simulated value, which then poisons the
+provenance of everything downstream.
+
+Design reasoning, and where this disagrees with the manifesto, is in
+[`docs/technical-proposal.md`](docs/technical-proposal.md).
+
+---
+
+## Limitations
+
+Stated plainly, because a system whose whole point is honesty about reconstruction
+cannot be vague about its own boundaries.
+
+- **Not zero-code.** Your program must route its side effects through the client.
+  Capturing enough from *outside* an uninstrumented process to reconstruct it is not
+  portably possible; pretending otherwise would produce a system that demos well and
+  lies.
+- **Sequential programs only.** Threads, async races and concurrent interleavings are
+  out of scope. A non-deterministic program will be reported as divergent, not
+  silently mis-replayed.
+- **Only the sandboxed workspace is captured.** Unmediated writes *inside* it are
+  detected by hash. Writes outside it — networks, databases, other directories — are
+  neither captured nor detected.
+- **The ambient environment is not captured.** Environment variables, installed
+  packages and the program's own source are assumed unchanged; a replay from a
+  different directory or a modified script will diverge (loudly).
+- **A branch is not a prediction.** Past the divergence point, `live` calls query a
+  world that has moved on. Noidroid tells you what happens now from that state — not
+  what would have happened then.
+- **No scale work.** No packing, no garbage collection, no remote store, no large
+  artifact handling. Unix sockets only, so Linux and macOS but not Windows.
+
+---
+
+## Roadmap
+
+1. **An HTTP/tool adapter**, so common boundaries need no per-call instrumentation.
+2. **Detecting unmediated effects beyond the workspace** — closing the honesty gap
+   the third limitation names.
+3. **A snapshot fast-path** (container or process image) behind the same checkpoint
+   interface, for prefixes too expensive to re-execute.
+4. **Structured trajectory comparison**, then guided multi-branch exploration.
+5. **Dataset export** — declared decision points already carry
+   `(state, action, alternatives, outcome)`.
+
+Deliberately unbuilt for now: a dashboard, a browser adapter, distributed storage, an
+agent framework, and anything resembling a universal simulator.
+
+---
+
+## Development
+
+```bash
+cargo test                      # 18 tests: unit + end-to-end through a real subprocess
+cargo clippy --all-targets
+```
+
+The end-to-end tests drive a real Python child process through the real protocol,
+because the claims worth testing — *a replay cannot touch the world*, *a branch cannot
+mutate its parent* — are claims about what happens between processes.
+
+```
+crates/noidroid-core/   objects, store, workspace trees, the record/replay/branch engine
+crates/noidroid-cli/    the `noidroid` binary
+clients/python/         the client (one file, stdlib only)
+examples/flight_agent/  the example above
+docs/                   technical proposal
+manifesto.md            the product vision this is built toward
+```
+
+## License
+
+Apache-2.0. See [LICENSE](LICENSE).
