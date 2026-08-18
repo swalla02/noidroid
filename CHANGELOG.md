@@ -37,6 +37,11 @@ how the package version relates to `STEP_VERSION`, the on-disk object format.
 
 ### Fixed
 
+- A branch whose checkpoint could not be reached was refused, and then written to disk
+  anyway. The caller was told the branch failed while a trajectory sat in
+  `noidroid log` claiming an ancestry it did not have. The engine now declines to
+  persist it, and removes its workspace, because "you cannot branch from a checkpoint
+  you cannot reach" is an invariant of the engine rather than advice to the CLI.
 - A browser branch whose starting state could not be reproduced said so in the
   terminal but recorded its observations as `live`, i.e. as things that really
   happened. An unreproducible reconstruction now marks everything after it `unknown`,

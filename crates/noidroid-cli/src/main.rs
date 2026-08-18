@@ -446,7 +446,7 @@ fn cmd_branch(
     let prefix_divergence = report.divergences.iter().find(|d| d.index < at);
     if let Some(d) = prefix_divergence {
         return Err(Error::Refused(format!(
-            "cannot branch from {name}@{at}: the prefix could not be reconstructed ({d})"
+            "cannot branch from {name}@{at}: the checkpoint could not be reached ({d}).\n               Nothing was written; {name} is untouched."
         )));
     }
 

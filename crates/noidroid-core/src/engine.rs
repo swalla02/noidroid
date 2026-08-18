@@ -251,7 +251,23 @@ pub fn run(repo: &Repo, spec: &RunSpec, mode: Mode, source: Option<&Trajectory>)
         });
     }
 
+    // You cannot branch from a checkpoint you cannot reach. If the prefix did not
+    // reconstruct, the run that just happened is not a branch of anything, so it is
+    // not written down: persisting it would leave a trajectory on disk claiming an
+    // ancestry it does not have, while the caller was told the branch was refused.
+    let unreachable_checkpoint = match &mode {
+        Mode::Branch { at, .. } => report.divergences.iter().any(|d| d.index < *at),
+        _ => false,
+    };
+    if unreachable_checkpoint {
+        let _ = fs::remove_dir_all(&workspace);
+    }
+
     if let (Some(name), Some(head)) = (spec.name.clone(), session.parent.clone()) {
+        if unreachable_checkpoint {
+            report.steps = session.index;
+            return Ok(report);
+        }
         let outcome = session.outcome.clone().unwrap_or(Outcome {
             status: "aborted".into(),
             result: Value::Null,
