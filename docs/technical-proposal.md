@@ -514,7 +514,7 @@ build the products the trajectory graph makes possible.
 
 What follows is what exists and has been run, as opposed to what is planned above.
 
-**Built and verified** (24 tests: 11 unit, 11 end-to-end through a real subprocess, 2 driving real Chromium):
+**Built and verified** (32 tests: 18 unit, 11 end-to-end through a real subprocess, 3 driving real Chromium):
 
 | Claim | How it is checked |
 |---|---|
@@ -576,6 +576,22 @@ Two further findings from building it:
    of recorded knowledge had its failure recorded as a `live` value — a real thing that happened —
    when the truth was that nothing happened at all. The protocol now accepts `unknown` on an error,
    the only provenance claim a client may make, because it is the one that can only lose trust.
+
+### Third slice: the viewer
+
+The manifesto puts the viewer at V0.1 and then says, at length, not to build a UI before
+the execution model works. The model works and is verified, so the viewer is now the
+cheapest way to make the central interaction real: `noidroid tui` is three panes and one
+verb, and pressing `e` on a recorded decision runs the same `Mode::Branch` the CLI does.
+
+The design constraint that made it worth doing: **the palette carries the provenance
+lattice**. `real` / `live` / `simulated` / `unknown` are four colours before they are
+four words, which is the fastest way to answer the question the whole project exists to
+answer — *how much of this can I believe?* Nothing is said in colour that is not also
+said in words, so `NO_COLOR` and `--plain` cost nothing but decoration.
+
+`noidroid-cli` takes `ratatui` for this; `noidroid-core` still has three dependencies,
+which is the split the architecture was designed around.
 
 **Not built, and not pretended:** any adapter beyond the Python client and the browser, snapshot
 fast-paths, concurrency support, detection of effects outside the workspace, storage

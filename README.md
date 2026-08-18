@@ -22,6 +22,23 @@ that shares its parent's history object-for-object.
 The project is **Paranoid Android**. Its command-line interface, and the crates and
 packages that implement it, are `noidroid` — the contraction you actually type.
 
+<details>
+<summary><b>「 ゴ ゴ ゴ ゴ 」</b> — on the name</summary>
+
+Araki names Stands after the music he likes: Killer Queen, Echoes, Crazy Diamond,
+Highway Star, and Radiohead's own Creep. **PARANOID ANDROID** is built to that rule.
+
+It is a Stand whose ability is that an execution it has witnessed can be returned to
+and continued differently, and whose Destructive Power is rated **E**, because it can
+never change what happened. `noidroid stand` prints the parameters. They are graded
+honestly, so the stat block doubles as an accurate summary of what this thing can and
+cannot do.
+
+Nothing in the workflow goes through any of it. If none of the above meant anything
+to you, the tool is unaffected.
+
+</details>
+
 ```
         record              checkpoint                branch
   ┌──────────────┐      ┌──────────────┐      ┌──────────────────┐
@@ -152,6 +169,50 @@ See [`examples/browser_agent/`](examples/browser_agent/README.md). The adapter n
 
 ---
 
+## The viewer
+
+```bash
+noidroid tui
+```
+
+Three panes and one verb. The timeline is coloured by provenance, so a trajectory's
+honesty is legible before you have read a word of it; pressing `e` on a recorded
+decision reconstructs the prefix, diverges, and comes back with a new trajectory
+without leaving the screen.
+
+```text
+┌ explore from here ───────────────────────────────────────────────────────┐
+│「PARANOID ANDROID」  ゴ ゴ ゴ ゴ                                          │
+└──────────────────────────────────────────────────────────────────────────┘
+┌ TRAJECTORIES ──┐┌ TIMELINE ─────────────────────┐┌ CHECKPOINT ───────────┐
+│● run-1  failure││  0 ● genesis         replayed ││step        84c592e78c │
+│└ alt-1  success││  1 ● call flights.se…replayed ││action      decide …   │
+│                ││  2 ◆ decide pick_fli…intervene││provenance  simulated  │
+│                ││  3 ● call flights.bo…executed ││                       │
+│                ││  4 ✔ finish success  executed ││it could have chosen   │
+│                ││                               ││   FL-203              │
+└────────────────┘└───────────────────────────────┘└───────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────┐
+│ e  explore from here    r  replay    tab  pane    ↑↓  move    q  quit     │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+The colours are the Stand's, and they carry meaning rather than mood:
+
+| | |
+|---|---|
+| **phosphor green** | `real` — observed in the execution that actually happened |
+| **chrome** | `live` — really executed, but in a counterfactual world |
+| **violet** | `simulated` — supplied by an intervention; nobody ran it |
+| **amber** | `unknown` — needed, and not available |
+| **cyan** | `replayed` — served from the recording |
+| **crimson** | divergence, refusal, an ability that did not work |
+
+`--plain` drops the flourishes; `NO_COLOR` drops the colour. Neither removes anything
+you need, because nothing is said in colour that is not also said in words.
+
+---
+
 ## Quickstart
 
 Requires Rust ≥ 1.74, Python ≥ 3.9, Linux or macOS.
@@ -177,6 +238,8 @@ noidroid diff run-1 alt-1
 | `noidroid branch <traj>@<step>` | diverge: `--decide`, `--result` or `--fail` |
 | `noidroid checkout <traj>@<step> <dir>` | write out the workspace as it was |
 | `noidroid tree` · `diff` · `verify` | the branch graph, a comparison, a store integrity check |
+| `noidroid tui` | browse trajectories and explore from a checkpoint, interactively |
+| `noidroid stand` | 「 ゴ ゴ ゴ ゴ 」 |
 
 ---
 
@@ -317,7 +380,7 @@ and anything resembling a universal simulator.
 ## Development
 
 ```bash
-cargo test --all                # 25 tests: unit, end-to-end, and real-browser
+cargo test --all                # 32 tests: unit, end-to-end, and real-browser
 cargo clippy --all-targets
 
 # the browser tests need Chromium; they print SKIP and pass without it
@@ -334,7 +397,7 @@ because an object's name *is* the hash of its bytes.
 
 ```
 crates/noidroid-core/   objects, store, workspace trees, the record/replay/branch engine
-crates/noidroid-cli/    the `noidroid` binary
+crates/noidroid-cli/    the `noidroid` binary, the palette, the viewer, the Stand
 clients/python/         the client (stdlib only) and the browser adapter
 examples/flight_agent/  the example above
 examples/browser_agent/ the same idea driving real Chromium
