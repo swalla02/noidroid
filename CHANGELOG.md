@@ -25,6 +25,15 @@ how the package version relates to `STEP_VERSION`, the on-disk object format.
   graded honestly — Destructive Power **E**, because it can never change what
   happened — which makes the stat block an accurate capability summary as well as a
   joke. Nothing in the workflow goes through it.
+- **`noidroid.llm.Model`** — an adapter for the one input an agent cannot make
+  deterministic. Recording model calls means a replay serves them back rather than
+  calling the provider, so re-running an agent against a real conversation is free and
+  deterministic; and the model's tool choice is declared as a decision on the agent's
+  behalf, so branching to a different tool needs no instrumentation from the agent at
+  all. Provider-agnostic: it takes a callable, imports no SDK, and understands both
+  the Anthropic content-block and OpenAI `tool_calls` response shapes.
+- An `examples/llm_agent/` worked example with a deterministic stand-in model, so it
+  runs with no API key.
 
 ### Fixed
 

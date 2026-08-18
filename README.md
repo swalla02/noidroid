@@ -272,6 +272,27 @@ The client is one dependency-free file speaking newline-delimited JSON over a Un
 socket. That protocol, not the Python package, is the integration contract — a client
 for another language is an afternoon's work.
 
+For agents, `noidroid.llm.Model` wraps the model call — the one input an agent cannot
+make deterministic:
+
+```python
+from noidroid.llm import Model
+
+model = Model(noidroid.connect())
+response = model.complete(
+    lambda: client.messages.create(model=name, max_tokens=1024, messages=messages),
+    request={"model": name, "messages": messages, "temperature": 0},
+    tools=list(REGISTRY),
+)
+```
+
+Two things follow without any further instrumentation. **Replay costs nothing** —
+every recorded response is served back, so you can iterate on your agent's code
+against a real conversation, deterministically, for free. And **the model's tool
+choice becomes a branchable decision**, so "what if it had reached for the other tool"
+is `noidroid branch run-1@2 --decide tool_choice_1=lookup_charges` rather than a
+prompt-engineering session. See [`examples/llm_agent/`](examples/llm_agent/README.md).
+
 For browsers, `noidroid.browser.Browser` wraps a Playwright page and does the
 mediating for you:
 
