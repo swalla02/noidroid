@@ -227,7 +227,7 @@ pub fn run(repo: &Repo, spec: &RunSpec, mode: Mode, source: Option<&Trajectory>)
             }
         }
         None => Err(Error::Protocol(format!(
-            "the process exited without connecting to noidroid.\n  The program must call the client (Python: `noidroid.connect()`), and that client\n  must be importable -- try: export PYTHONPATH=$PWD/clients/python{}",
+            "the process exited without connecting to Paranoid Android.\n  The program must call the client (Python: `noidroid.connect()`), and that client\n  must be importable -- try: export PYTHONPATH=$PWD/clients/python{}",
             tail_of(&stderr_path)
         ))),
     };

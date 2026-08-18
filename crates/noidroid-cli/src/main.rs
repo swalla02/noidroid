@@ -20,7 +20,12 @@ use style::{bold, dim, ok, warn};
 #[command(
     name = "noidroid",
     version,
-    about = "Record executions. Return to a point inside them. Explore what could have happened.",
+    about = "Paranoid Android \u{2014} record an execution, return to a point inside it, \
+             explore what could have happened instead.",
+    long_about = "Paranoid Android records an execution as an immutable, content-addressed \
+                  trajectory, returns to any checkpoint inside it, and runs branches from there \
+                  where one thing is different. The original is never modified.\n\n\
+                  `noidroid` is the command; Paranoid Android is the project.",
     max_term_width = 100
 )]
 struct Cli {

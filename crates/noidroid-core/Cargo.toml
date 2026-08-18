@@ -1,6 +1,6 @@
 [package]
 name = "noidroid-core"
-description = "Immutable, content-addressed trajectory engine: record, reconstruct and branch executions."
+description = "Paranoid Android core: an immutable, content-addressed trajectory engine that records, reconstructs and branches executions."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

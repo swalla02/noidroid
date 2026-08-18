@@ -7,9 +7,9 @@ this file.
 
 The rule the client enforces on your behalf:
 
-    You never perform a mediated interaction unless noidroid says ``execute``.
+    You never perform a mediated interaction unless Paranoid Android says ``execute``.
 
-During replay noidroid never says ``execute``, so a replay structurally cannot
+During replay Paranoid Android never says ``execute``, so a replay structurally cannot
 touch the world. That safety property lives in the protocol, not in your memory.
 
 Typical use::
@@ -57,7 +57,7 @@ PROTOCOL_VERSION = 1
 
 #: Observes; repeating it changes nothing.
 READ = "read"
-#: Mutates the sandboxed workspace; reversible because the sandbox belongs to noidroid.
+#: Mutates the sandboxed workspace; reversible because the sandbox belongs to Paranoid Android.
 WRITE = "write"
 #: Leaves the sandbox -- payments, mail, production writes, physical actuation.
 #: Never performed during replay, denied by default while branching.
@@ -91,7 +91,7 @@ class Unavailable(NoidroidError):
 
 
 class Session:
-    """A live connection to the noidroid engine."""
+    """A live connection to the Paranoid Android engine."""
 
     def __init__(self, path: str) -> None:
         self._sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -110,7 +110,7 @@ class Session:
         self._w.flush()
         line = self._r.readline()
         if not line:
-            raise NoidroidError("noidroid closed the connection")
+            raise NoidroidError("Paranoid Android closed the connection")
         response = json.loads(line)
         if not response.get("ok", False):
             kind = response.get("kind")
@@ -135,7 +135,7 @@ class Session:
     ) -> Any:
         """Mediate one interaction with the world.
 
-        ``run`` is invoked only if noidroid says to. Its return value must be
+        ``run`` is invoked only if Paranoid Android says to. Its return value must be
         JSON-serialisable: that is what gets stored, replayed and branched.
         """
         response = self._rpc(
@@ -170,7 +170,7 @@ class Session:
     def decide(self, name: str, options: Iterable[Any], choice: Any) -> Any:
         """Declare a decision point, and return the choice to actually use.
 
-        Declaring a decision is what makes it branchable: noidroid can only offer
+        Declaring a decision is what makes it branchable: Paranoid Android can only offer
         "what if it had chosen differently" for choices it was told about. The
         returned value may differ from ``choice`` when a branch overrides it.
         """
@@ -207,7 +207,7 @@ class _PassThrough:
     """What you get when the program is not running under ``noidroid run``.
 
     Everything executes for real and nothing is recorded, so the same script works
-    with and without noidroid.
+    with and without Paranoid Android.
     """
 
     mode = "off"
