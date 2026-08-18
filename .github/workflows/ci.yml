@@ -1,0 +1,111 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A newer push to the same branch makes the older run irrelevant.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  lint:
+    name: fmt + clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain
+        run: rustup component add rustfmt clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --all-targets --all-features -- -D warnings
+
+  test:
+    name: tests (with browser)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Playwright and Chromium
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install playwright
+          python -m playwright install --with-deps chromium
+      - name: Run every test, including the ones that drive a real browser
+        run: cargo test --all --verbose
+      - name: Fail if the browser tests silently skipped
+        # The browser tests pass when Chromium is missing, by design. On this job it
+        # is present, so a skip here would mean the suite is quietly not running.
+        run: |
+          if cargo test --all 2>&1 | grep -q "SKIP: browser adapter test"; then
+            echo "::error::browser tests skipped on the job that installs a browser"
+            exit 1
+          fi
+
+  test-without-browser:
+    name: tests (no browser installed)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # No Playwright on purpose: the browser tests must skip cleanly rather than
+      # fail, so that contributors without Chromium can still run the suite.
+      - run: cargo test --all
+
+  test-macos:
+    name: tests (macOS)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # The engine talks to clients over Unix sockets and spawns real child
+      # processes; this job is what backs the claim that it works beyond Linux.
+      - run: cargo test --all
+
+  example:
+    name: the example actually runs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: cargo build --release
+      - name: Record, replay, branch, and check the invariants from the CLI
+        run: |
+          set -euo pipefail
+          export PATH="$PWD/target/release:$PATH"
+          export PYTHONPATH="$PWD/clients/python"
+          export NO_COLOR=1
+
+          noidroid run -- python3 examples/flight_agent/agent.py
+          noidroid replay run-1 | tee replay.txt
+          grep -q "faithful:" replay.txt
+
+          before=$(python3 -c "import json;print(json.load(open('.noidroid/trajectories/run-1.json'))['head'])")
+          noidroid branch run-1@2 --decide pick_flight=FL-203 \
+            --simulate 'payments.charge={"ok":true}' | tee branch.txt
+          grep -q "shared with run-1" branch.txt
+
+          after=$(python3 -c "import json;print(json.load(open('.noidroid/trajectories/run-1.json'))['head'])")
+          test "$before" = "$after" || { echo "branching mutated its parent"; exit 1; }
+
+          noidroid verify | tee verify.txt
+          grep -q "intact:" verify.txt

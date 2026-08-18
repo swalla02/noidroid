@@ -356,6 +356,71 @@ pub struct StepNote {
 mod tests {
     use super::*;
 
+    /// Pins the exact bytes and address of a known step.
+    ///
+    /// Object names *are* the hash of their bytes, so a change to how a step
+    /// serialises silently invalidates every recording anyone has made: replaying an
+    /// older trajectory would re-derive different hashes and be reported as divergent,
+    /// with nothing to say that the tool changed rather than the program.
+    ///
+    /// If this test fails, that is it doing its job. Decide deliberately:
+    ///   * a field that is `default` on read and skipped on write when absent leaves
+    ///     these bytes unchanged, and needs no version bump;
+    ///   * anything else bumps `STEP_VERSION`, updates this fixture in the same
+    ///     commit, and says in the changelog that old trajectories cannot be replayed.
+    #[test]
+    fn format_is_pinned() {
+        let step = Step::new(
+            Some(Digest::from_hex(
+                "1111111111111111111111111111111111111111111111111111111111111111",
+            )),
+            3,
+            Action::Call {
+                target: "flights.seatmap".into(),
+                args: serde_json::json!({ "flight": "FL-101" }),
+                effect: EffectKind::Read,
+            },
+            vec![Effect {
+                key: "3:read:flights.seatmap".into(),
+                value: Digest::from_hex(
+                    "2222222222222222222222222222222222222222222222222222222222222222",
+                ),
+                effect: EffectKind::Read,
+                provenance: Provenance::Real,
+                outcome: EffectOutcome::Value,
+            }],
+            Digest::from_hex("3333333333333333333333333333333333333333333333333333333333333333"),
+            Provenance::Real,
+            Provenance::Real,
+            None,
+        );
+
+        let encoded = serde_json::to_string(&step).expect("a step serialises");
+        assert_eq!(
+            encoded,
+            concat!(
+                r#"{"type":"step","v":1,"#,
+                r#""parent":"1111111111111111111111111111111111111111111111111111111111111111","#,
+                r#""index":3,"#,
+                r#""action":{"kind":"call","target":"flights.seatmap","args":{"flight":"FL-101"},"effect":"read"},"#,
+                r#""effects":[{"key":"3:read:flights.seatmap","#,
+                r#""value":"2222222222222222222222222222222222222222222222222222222222222222","#,
+                r#""effect":"read","provenance":"real"}],"#,
+                r#""state_root":"3333333333333333333333333333333333333333333333333333333333333333","#,
+                r#""provenance":"real","intervention":null}"#,
+            ),
+            "the on-disk step format changed; see the doc comment on this test"
+        );
+
+        // The address every existing recording's step 3 would be filed under.
+        assert_eq!(
+            Digest::of(encoded.as_bytes()).as_str(),
+            "7bd933a35d2bc7efabf81ce857556d94107edeac200a782dacb254648a4d750b",
+            "the address derived from a step changed; see the doc comment on this test"
+        );
+        assert_eq!(STEP_VERSION, 1, "STEP_VERSION moved without this fixture");
+    }
+
     #[test]
     fn provenance_join_is_monotone_and_conservative() {
         assert_eq!(Provenance::Real.join(Provenance::Real), Provenance::Real);

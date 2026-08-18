@@ -1,0 +1,44 @@
+name: Bug report
+description: Something behaves differently from what it says it does
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: Include the command and its output.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected instead
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: "`noidroid --version`, or the commit"
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - engine (record / replay / branch)
+        - store or object format
+        - CLI
+        - Python client
+        - browser adapter
+        - docs
+    validations:
+      required: true
+  - type: textarea
+    id: divergence
+    attributes:
+      label: If a replay or branch diverged, paste the divergence report
+      description: The `@n kind — detail` lines are usually the whole story.
+      render: shell
