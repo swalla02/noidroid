@@ -313,7 +313,7 @@ and anything resembling a universal simulator.
 ## Development
 
 ```bash
-cargo test                      # 23 tests: unit, end-to-end, and real-browser
+cargo test --all                # 24 tests: unit, end-to-end, and real-browser
 cargo clippy --all-targets
 
 # the browser tests need Chromium; they print SKIP and pass without it
@@ -323,6 +323,10 @@ pip install playwright && playwright install chromium
 The end-to-end tests drive a real Python child process through the real protocol,
 because the claims worth testing — *a replay cannot touch the world*, *a branch cannot
 mutate its parent* — are claims about what happens between processes.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the branch and release workflow, and for the
+rules about `STEP_VERSION` — the on-disk object format is a compatibility surface,
+because an object's name *is* the hash of its bytes.
 
 ```
 crates/noidroid-core/   objects, store, workspace trees, the record/replay/branch engine

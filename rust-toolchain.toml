@@ -1,0 +1,5 @@
+# Pinned so that `cargo fmt` and `cargo clippy` behave the same for contributors as
+# they do in CI. The minimum supported version is `rust-version` in Cargo.toml.
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]
