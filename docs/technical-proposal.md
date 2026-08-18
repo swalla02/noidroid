@@ -514,7 +514,7 @@ build the products the trajectory graph makes possible.
 
 What follows is what exists and has been run, as opposed to what is planned above.
 
-**Built and verified** (32 tests: 18 unit, 11 end-to-end through a real subprocess, 3 driving real Chromium):
+**Built and verified** (33 tests: 18 unit, 12 end-to-end through a real subprocess, 3 driving real Chromium):
 
 | Claim | How it is checked |
 |---|---|
