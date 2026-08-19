@@ -55,6 +55,11 @@ enum Command {
         /// read, never written; `.noidroidignore` extends the skipped directories.
         #[arg(long, value_name = "DIR")]
         watch: Option<PathBuf>,
+        /// Record provider traffic by standing between the agent and the API, for
+        /// agents you did not write and programs in any language.
+        #[arg(long, value_name = "URL", num_args = 0..=1,
+              default_missing_value = "https://api.anthropic.com")]
+        proxy: Option<String>,
         /// The command to run, after `--`.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
         command: Vec<String>,
@@ -199,8 +204,20 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
             auto,
             allow_gaps,
             watch,
+            proxy,
             command,
-        } => cmd_run(&repo, &cwd, name, auto, allow_gaps, watch, command),
+        } => cmd_run(
+            &repo,
+            &cwd,
+            RunFlags {
+                name,
+                auto,
+                allow_gaps,
+                watch,
+                proxy,
+            },
+            command,
+        ),
         Command::Log { trajectory } => cmd_log(&repo, trajectory),
         Command::Show { reference } => cmd_show(&repo, &reference),
         Command::Replay { trajectory } => cmd_replay(&repo, &cwd, &trajectory),
@@ -296,21 +313,47 @@ fn auto_capture_env() -> Result<Vec<(String, String)>> {
     Ok(vec![("PYTHONPATH".to_string(), joined)])
 }
 
-fn cmd_run(
-    repo: &Repo,
-    cwd: &Path,
+/// How a recording was asked for. Grouped because these travel together and there
+/// are now enough of them that a positional list is a bug waiting to be written.
+struct RunFlags {
     name: Option<String>,
     auto: bool,
     allow_gaps: bool,
     watch: Option<PathBuf>,
-    command: Vec<String>,
-) -> Result<ExitCode> {
+    proxy: Option<String>,
+}
+
+fn cmd_run(repo: &Repo, cwd: &Path, flags: RunFlags, command: Vec<String>) -> Result<ExitCode> {
+    let RunFlags {
+        name,
+        auto,
+        allow_gaps,
+        watch,
+        proxy,
+    } = flags;
     let name = name.unwrap_or_else(|| repo.next_name("run"));
     if repo.has_trajectory(&name) {
         return Err(Error::Refused(format!(
             "trajectory '{name}' already exists; history is append-only"
         )));
     }
+    // The proxy is an ordinary client of the protocol that happens to run the agent
+    // as its own child, so the engine still supervises exactly one process.
+    let command = match &proxy {
+        Some(upstream) => {
+            let mut wrapped = vec![
+                "python3".to_string(),
+                "-m".to_string(),
+                "noidroid.proxy".to_string(),
+                "--upstream".to_string(),
+                upstream.clone(),
+                "--".to_string(),
+            ];
+            wrapped.extend(command);
+            wrapped
+        }
+        None => command,
+    };
     let watch = match watch {
         Some(dir) => Some(
             dir.canonicalize()
@@ -322,7 +365,7 @@ fn cmd_run(
         command,
         launch_dir: cwd.to_path_buf(),
         name: Some(name.clone()),
-        env: if auto {
+        env: if auto || proxy.is_some() {
             auto_capture_env_with(allow_gaps)?
         } else {
             Vec::new()

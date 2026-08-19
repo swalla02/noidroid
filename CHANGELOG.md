@@ -60,6 +60,26 @@ how the package version relates to `STEP_VERSION`, the on-disk object format.
 
 ### Added
 
+- **`noidroid run --proxy -- <command>`** records an agent you did not write. Both the
+  Anthropic and OpenAI clients read their endpoint from the environment, so the proxy
+  stands between the agent and the provider and records what crosses the wire — no
+  patching, no TLS interception, and no requirement that the agent be Python or that
+  you have its source. Tested with an agent that has neither a noidroid import nor a
+  configured base URL, recorded and then replayed with the provider shut down.
+  Unlike a trace exported from an observability tool, what is recorded is the request
+  itself, which is what makes matching on replay meaningful rather than approximate.
+  It captures provider traffic only; pair it with `--watch` to record the files. A
+  streamed response is buffered rather than passed through: same content, different
+  timing (#45).
+
+### Fixed
+
+- The check that catches a missing program treated URLs and flag values as paths,
+  because both contain slashes. Introduced with the check itself and caught by using
+  the proxy, whose upstream is a URL.
+
+### Added
+
 - **`noidroid export` / `noidroid import`** — a trajectory and everything it reaches
   as one committable JSON file. A recording is only a regression test if it can leave
   the machine it was made on, and `.noidroid/` is gitignored and machine-local. The

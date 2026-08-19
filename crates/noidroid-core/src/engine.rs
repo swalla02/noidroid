@@ -1228,11 +1228,15 @@ fn spawn(
 /// that were relative to the launch directory are resolved before we hand them over.
 fn resolve_command(command: &[String], launch_dir: &Path) -> Result<Vec<String>> {
     let mut resolved = Vec::with_capacity(command.len());
+    let mut after_flag = false;
     for arg in command {
         if arg.starts_with('-') {
             resolved.push(arg.clone());
+            after_flag = true;
             continue;
         }
+        let was_flag_value = after_flag;
+        after_flag = false;
         let candidate = launch_dir.join(arg);
         if candidate.exists() {
             resolved.push(
@@ -1243,10 +1247,14 @@ fn resolve_command(command: &[String], launch_dir: &Path) -> Result<Vec<String>>
             );
             continue;
         }
-        // Something that looks like a path and is not there. Catching it now turns a
-        // confusing "the process never connected" into the actual problem — which for
-        // an imported bundle is that a recording is not a program.
-        if arg.contains('/') && !Path::new(arg).is_absolute() {
+        // Something that looks like a local path and is not there. Catching it now
+        // turns a confusing "the process never connected" into the actual problem —
+        // which for an imported bundle is that a recording is not a program.
+        //
+        // A URL is not a path, and neither is the value of a flag: both routinely
+        // contain slashes and neither is ours to resolve.
+        let looks_local = arg.contains('/') && !arg.contains("://") && !was_flag_value;
+        if looks_local && !Path::new(arg).is_absolute() {
             return Err(Error::NotFound(format!(
                 "the recorded command refers to '{arg}', which is not here.\n  A trajectory records what a program did, not the program itself —\n  run this from the checkout it was recorded in."
             )));
