@@ -130,7 +130,7 @@ fn a_replay_that_reaches_the_network_is_caught_and_explained() {
         .last_words
         .expect("a run that died mid-way should report why");
     assert!(
-        said.contains("93.184.216.34") && said.contains("never recorded"),
+        said.contains("93.184.216.34") && said.contains("nothing recorded it"),
         "the report must name what tried to leave and why it matters, got: {said}"
     );
 }
@@ -167,7 +167,7 @@ fn recording_is_never_fenced() {
     // the fence refusing it.
     if let Some(said) = &report.last_words {
         assert!(
-            !said.contains("never recorded"),
+            !said.contains("nothing recorded it"),
             "the fence must not fire while recording, got: {said}"
         );
     }
@@ -202,7 +202,7 @@ fn a_branch_is_fenced_the_same_as_a_replay() {
         .last_words
         .expect("the branch left the machine, so it should have died saying so");
     assert!(
-        said.contains("93.184.216.34") && said.contains("never recorded"),
+        said.contains("93.184.216.34") && said.contains("nothing recorded it"),
         "a branch must be fenced like a replay, got: {said}"
     );
 }
@@ -242,9 +242,12 @@ fn the_fence_stands_aside_for_a_call_the_engine_asked_for() {
     // TEST-NET-3 routes nowhere, so the call fails either way. *How* it failed is
     // the evidence: the fence names itself, a network that is simply not there
     // does not.
-    let why = branch.outcome.result["why"].as_str().unwrap_or("").to_string();
+    let why = branch.outcome.result["why"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
     assert!(
-        !why.contains("never recorded"),
+        !why.contains("nothing recorded it"),
         "the fence blocked a call the engine authorised: {why}"
     );
 }
