@@ -12,7 +12,7 @@ name = "noidroid"
 path = "src/main.rs"
 
 [dependencies]
-noidroid-core = { path = "../noidroid-core", version = "0.2.0" }
+noidroid-core = { path = "../noidroid-core", version = "0.3.0" }
 clap = { version = "4", features = ["derive"] }
 serde_json = "1"
 ratatui = "0.30.2"

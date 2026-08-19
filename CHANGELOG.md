@@ -7,6 +7,91 @@ how the package version relates to `STEP_VERSION`, the on-disk object format.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-19
+
+*The laws of the Stand.* This release adds almost no functionality. It makes the
+execution model coherent, so that adding robotics, RL environments or a laboratory
+later is an adapter rather than a redesign. The contract is
+[`docs/environment-model.md`](docs/environment-model.md).
+
+### Added
+
+- **The environment contract.** An environment is not something we can save and load;
+  it is something that can be asked, told, and asked what it knows about its own state.
+  Three methods — `manifest`, `observe`, `restore` — and two of them are allowed to say
+  no. Three implementations, because there are three distinct answers: `Workspace` (the
+  directory we own), `Reported` (a world only the program can see), and `Situation`
+  (the two together). Anything not written in Rust declares its world over the wire
+  instead, with the new `observe` protocol message.
+- **Grip: what a state reference is worth.** `state_root` used to be the Merkle root of
+  a directory, full stop — one answer to "what is the state here", and the wrong one for
+  every environment this project is aimed at. A step now records a `grip` beside it:
+  `captured` (we hold the bytes and can put the world back), `witnessed` (we hold a
+  fingerprint, so a reconstruction that lands elsewhere is detected and can never be
+  repaired), `opaque` (nothing was captured, so re-execution still works and cannot be
+  shown to have worked). Grip joins like provenance: the weakest part decides.
+- **A checkpoint answers three questions.** `noidroid show` now prints *reach* (can I
+  get back here: `rebuild`, `rebuild+restore`, `unreachable`), *evidence* (will I know
+  if I got it wrong) and *grounding* (is what I get back to a claim about reality). None
+  collapses into another, and none of them is a percentage. A robot checkpoint reads
+  `rebuild / none / real`; a checkpoint inside a branch reads
+  `rebuild / captured / simulated`.
+- **Branching from an unreachable checkpoint is refused before the program is spawned.**
+  If the prefix performed an irreversible effect in a world we cannot put back, the only
+  route back through it is to perform it again. The refusal names the step and the
+  target. Discovering this halfway through is the version that re-submits the form in
+  order to find out it should not have.
+- **The reference environment** (`examples/reference/`): a deterministic reactor and an
+  operator whose policy is reasonable and wrong. About a hundred lines that record,
+  reconstruct, branch, intervene and compare — original melts down, branch survives —
+  in a world that can be re-driven and can never be put back. It is the environment
+  contract made runnable, and it is what `environment_slice` tests against.
+- `Trajectory.worlds` records which worlds a run declared and how well it could see
+  them, so `noidroid log` can say what it would take to return to a recording.
+
+### Changed
+
+- **The browser adapter declares its page as a world.** It was already re-driving and
+  comparing page digests, in its own private vocabulary, with nothing in the core aware
+  that a page existed. The page is now a `witnessed` world like any other: the
+  fingerprint lands in the recorded state at `.world/browser.json`, `noidroid show`
+  prints it, `noidroid diff` shows when it changed, and the checkpoint analysis knows
+  the difference between the workspace and the page.
+- **`bisect` no longer counts a probe that established nothing as a flip.** A branch
+  that could not be re-entered, could not be reconstructed, or died without reaching a
+  verdict reads as `unknown`. Reporting it as "changed the outcome" was inventing the
+  one answer the command exists to find.
+- `EffectKind::Write` is documented as what it always meant: *reversible under
+  reconstruction*, not "touches a disk". A browser navigation is a `write` because
+  re-driving rebuilds the page; an actuator command is `irreversible` because nothing
+  rebuilds the world.
+
+### Fixed
+
+- **A reconstruction claimed to have restored a world it had not.** When a
+  `write`/`irreversible` effect was deliberately not re-executed, the engine restored
+  the recorded tree and counted the step as `state_restored`. For a directory that is
+  true. For a browser it filed a page nobody restored under the address of the page the
+  recording saw. Restoration now reports the grip it actually achieved, and anything
+  short of `captured` is *checked* instead of asserted.
+- **The browser tests could not tell a missing browser from a broken one.** The guard
+  looked for a Chromium on disk, so a host with the download but not its shared
+  libraries failed three tests with an agent that "aborted" for no stated reason. It
+  launches a browser now — and the first version of that probe was itself the same bug
+  one level down: `cargo fmt` joined its multi-line string literal and kept the source
+  indentation, turning the script into an `IndentationError` that exited in thirteen
+  milliseconds and read as "no browser here", on the CI job whose entire purpose is to
+  run the browser tests. One-line script now, and the skip says which shared library is
+  missing.
+
+### Compatibility
+
+`STEP_VERSION` stays at **1**. `grip` defaults to `captured` and is skipped when
+serialising, so a step recorded before this release reads back as exactly what it was,
+and a workspace-only step recorded after it serialises to the same bytes and the same
+address as before. Existing trajectories replay, branch, export and import unchanged.
+No migration.
+
 ### Added
 
 - **The egress fence.** During a replay or a branch, an outbound socket to anything
@@ -244,6 +329,7 @@ only the sandboxed workspace is captured, the ambient environment is not capture
 branch is not a prediction, browser reconstruction is bounded by the recorded page
 set, and no scale work.
 
-[Unreleased]: https://github.com/swalla02/noidroid/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/swalla02/noidroid/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/swalla02/noidroid/releases/tag/v0.3.0
 [0.2.0]: https://github.com/swalla02/noidroid/releases/tag/v0.2.0
 [0.1.0]: https://github.com/swalla02/noidroid/releases/tag/v0.1.0
