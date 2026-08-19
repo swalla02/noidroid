@@ -49,7 +49,15 @@ pub enum Mode {
     /// Run for real and write down what happened.
     Record,
     /// Re-derive a recorded trajectory and check it still hashes the same.
-    Replay,
+    ///
+    /// `live` names targets to execute for real instead of serving from the
+    /// recording. That is how a recording stays useful when the thing you changed is
+    /// the prompt or the model: the tools, the network and the clock still come from
+    /// the recording, so the run is controlled, but the model answers now.
+    ///
+    /// It is not a reproduction, and the engine does not pretend otherwise —
+    /// everything from the first live call onward is counterfactual.
+    Replay { live: Vec<String> },
     /// Re-derive a prefix, then deliberately do something else.
     Branch {
         at: u64,
@@ -64,7 +72,7 @@ impl Mode {
     fn label(&self) -> &'static str {
         match self {
             Mode::Record => "record",
-            Mode::Replay => "replay",
+            Mode::Replay { .. } => "replay",
             Mode::Branch { .. } => "branch",
         }
     }
@@ -198,7 +206,7 @@ pub fn run(repo: &Repo, spec: &RunSpec, mode: Mode, source: Option<&Trajectory>)
     let watching = matches!(mode, Mode::Record) && spec.watch.is_some();
     let workspace = match (&mode, &spec.watch) {
         (Mode::Record, Some(dir)) => dir.clone(),
-        (Mode::Replay, _) => repo
+        (Mode::Replay { .. }, _) => repo
             .tmp_dir()
             .join(format!("replay-{}", std::process::id())),
         _ => repo.workspace_dir(&run_label),
@@ -257,6 +265,7 @@ pub fn run(repo: &Repo, spec: &RunSpec, mode: Mode, source: Option<&Trajectory>)
         mode: &mode,
         recorded: &recorded,
         env: situation,
+        gone_live: false,
         parent: None,
         parent_provenance: Provenance::Real,
         index: 0,
@@ -402,6 +411,8 @@ struct Session<'a> {
     recorded: &'a [(Digest, Step)],
     /// The world, in parts. Everything this module knows about state goes through it.
     env: Situation,
+    /// Set the first time a call is executed live during a replay.
+    gone_live: bool,
     parent: Option<Digest>,
     parent_provenance: Provenance,
     index: u64,
@@ -525,8 +536,14 @@ impl<'a> Session<'a> {
     fn phase(&self) -> Phase {
         match self.mode {
             Mode::Record => Phase::Fresh,
-            Mode::Replay => {
-                if (self.index as usize) < self.recorded.len() {
+            Mode::Replay { .. } => {
+                // Once something has been executed live, the rest of the run is a
+                // counterfactual: its steps cannot be expected to address the same
+                // objects, and saying they diverged would be reporting a decision the
+                // operator made as if it were a fault.
+                if self.gone_live {
+                    Phase::Counterfactual
+                } else if (self.index as usize) < self.recorded.len() {
                     Phase::Reconstructing
                 } else {
                     Phase::PastRecording
@@ -611,6 +628,37 @@ impl<'a> Session<'a> {
         }
 
         match self.phase() {
+            // A live replay keeps serving the recording for everything it did not
+            // ask to run live, for as long as the run still tracks it. The model
+            // answering differently is the point; the tools, the network and the
+            // clock staying put is what makes the comparison mean anything.
+            //
+            // The moment the run asks for something the recording does not have at
+            // this position, it has genuinely left the recording and is executed.
+            // Inngest calls this graceful determinism and it is the right shape:
+            // degrade where you must, not everywhere at once.
+            Phase::Counterfactual if self.replaying_live() && !self.runs_live(&target) => {
+                match self.recorded_step().cloned() {
+                    Some(recorded) if actions_agree(&recorded.action, &action) => {
+                        let value = self.recorded_value(&recorded)?;
+                        self.commit_recorded(&recorded, Delivery::Replayed)?;
+                        Ok(self.replayed_response(&recorded, value))
+                    }
+                    _ => {
+                        if effect == EffectKind::Irreversible && !self.may_perform_irreversible() {
+                            return self.deny_irreversible(action, target);
+                        }
+                        self.pending = Some(Pending {
+                            action,
+                            effect,
+                            provenance: Provenance::Live,
+                            started: Instant::now(),
+                            outcome: EffectOutcome::Value,
+                        });
+                        Ok(Response::execute())
+                    }
+                }
+            }
             // Nothing recorded to lean on: the application really performs it.
             Phase::Fresh | Phase::Counterfactual => {
                 if effect == EffectKind::Irreversible && !self.may_perform_irreversible() {
@@ -629,7 +677,20 @@ impl<'a> Session<'a> {
                 Ok(Response::execute())
             }
             // Reconstructing: serve the recording. The engine never says "execute"
-            // here, so a replay structurally cannot touch the world.
+            // here, so a replay structurally cannot touch the world — except for a
+            // target the operator explicitly asked to run live, which is the one way
+            // a recording stays useful after the prompt or the model changed.
+            Phase::Reconstructing if self.runs_live(&target) => {
+                self.gone_live = true;
+                self.pending = Some(Pending {
+                    action,
+                    effect,
+                    provenance: Provenance::Live,
+                    started: Instant::now(),
+                    outcome: EffectOutcome::Value,
+                });
+                Ok(Response::execute())
+            }
             Phase::Reconstructing => {
                 let recorded = self
                     .recorded_step()
@@ -755,6 +816,23 @@ impl<'a> Session<'a> {
             false,
         )?;
         Ok(Response::use_value(value, "simulated", "intervened"))
+    }
+
+    /// Was this target named as one to execute for real?
+    ///
+    /// Prefix matching, so `--live model` covers every `model.*` call without asking
+    /// anyone to write a glob.
+    fn runs_live(&self, target: &str) -> bool {
+        match self.mode {
+            Mode::Replay { live } => live
+                .iter()
+                .any(|p| target == p || target.starts_with(&format!("{p}."))),
+            _ => false,
+        }
+    }
+
+    fn replaying_live(&self) -> bool {
+        matches!(self.mode, Mode::Replay { live } if !live.is_empty())
     }
 
     fn may_perform_irreversible(&self) -> bool {

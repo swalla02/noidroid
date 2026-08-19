@@ -210,8 +210,35 @@ the day somebody changes the decision that caused it.
 
 The boundary is the same as everywhere else: this checks the program still behaves as
 recorded given the inputs that were recorded. It is not a claim that the world stayed
-the same, and it is not a substitute for running against a live model when what you
-changed is the prompt or the model.
+the same.
+
+### When what changed is the prompt or the model
+
+Then a plain replay is the wrong instrument, and honestly so: forking live trajectories
+with a swapped model leaves [about 3% of replayed states
+valid](https://arxiv.org/html/2608.08239). So name the part that should be new:
+
+```bash
+noidroid replay run-1 --live model
+```
+
+The model answers now; the tools, the network and the clock still come from the
+recording, so only one thing changed and the comparison means something. Everything
+before the first live call still reproduces exactly and is checked. Everything after it
+is marked `live` — really executed, in a world that did not happen — and stays
+comparable:
+
+```console
+  steps re-derived   1/1 identical objects
+  values by provenance   1 real, 2 live
+
+  live  up to the first live call this reproduced exactly; everything after it is new
+    noidroid diff run-1 run-1~live-1
+```
+
+A step the run still asks for in the same order is still served from the recording, so
+the run keeps its grip for as long as it tracks; the first thing the recording cannot
+answer is executed instead. It degrades where it must, not everywhere at once.
 
 ---
 

@@ -88,7 +88,13 @@ fn an_undeclared_clock_makes_every_replay_diverge() {
         .trajectory
         .unwrap();
 
-    let report = engine::run(&f.repo, &f.spec(None, false), Mode::Replay, Some(&recorded)).unwrap();
+    let report = engine::run(
+        &f.repo,
+        &f.spec(None, false),
+        Mode::Replay { live: Vec::new() },
+        Some(&recorded),
+    )
+    .unwrap();
 
     assert!(
         report
@@ -108,7 +114,13 @@ fn declaring_it_volatile_makes_the_replay_faithful() {
         .trajectory
         .unwrap();
 
-    let report = engine::run(&f.repo, &f.spec(None, true), Mode::Replay, Some(&recorded)).unwrap();
+    let report = engine::run(
+        &f.repo,
+        &f.spec(None, true),
+        Mode::Replay { live: Vec::new() },
+        Some(&recorded),
+    )
+    .unwrap();
 
     assert!(
         report.faithful(),

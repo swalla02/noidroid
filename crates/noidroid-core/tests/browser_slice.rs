@@ -253,8 +253,13 @@ impl Fixture {
     fn replay(&self, t: &Trajectory) -> engine::Report {
         let mut spec = self.spec("unused", false);
         spec.name = None;
-        engine::run(&self.repo, &spec, Mode::Replay, Some(t))
-            .expect("replay should run to completion")
+        engine::run(
+            &self.repo,
+            &spec,
+            Mode::Replay { live: Vec::new() },
+            Some(t),
+        )
+        .expect("replay should run to completion")
     }
 
     /// Point the fixture at an agent written from the test rather than an example.
