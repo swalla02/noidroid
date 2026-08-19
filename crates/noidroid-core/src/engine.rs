@@ -23,7 +23,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
 
-use crate::error::{Error, Result};
+use crate::error::{Doing, Error, Result};
 use crate::hash::Digest;
 use crate::model::{
     Action, Delivery, Effect, EffectKind, EffectOutcome, ForkPoint, Intervention, Outcome,
@@ -181,9 +181,10 @@ pub fn run(repo: &Repo, spec: &RunSpec, mode: Mode, source: Option<&Trajectory>)
     };
     if !watching {
         if workspace.exists() {
-            fs::remove_dir_all(&workspace)?;
+            fs::remove_dir_all(&workspace).doing(|| format!("clearing {}", workspace.display()))?;
         }
-        fs::create_dir_all(&workspace)?;
+        fs::create_dir_all(&workspace)
+            .doing(|| format!("creating the workspace {}", workspace.display()))?;
     }
     // A watched directory is somebody's project, so the parts that dwarf the source
     // are skipped. A sandbox holds only what the run put there, so nothing is.
@@ -200,8 +201,11 @@ pub fn run(repo: &Repo, spec: &RunSpec, mode: Mode, source: Option<&Trajectory>)
 
     let socket_path = unique_socket_path();
     let _ = fs::remove_file(&socket_path);
-    let listener = UnixListener::bind(&socket_path)?;
-    listener.set_nonblocking(true)?;
+    let listener = UnixListener::bind(&socket_path)
+        .doing(|| format!("binding the socket {}", socket_path.display()))?;
+    listener
+        .set_nonblocking(true)
+        .doing(|| "putting the socket in non-blocking mode")?;
 
     let stdout_path = repo.log_path(&run_label, "out");
     let stderr_path = repo.log_path(&run_label, "err");
@@ -1199,9 +1203,14 @@ fn spawn(
         .env("NOIDROID_MODE", mode.label())
         .env("NOIDROID_WORKSPACE", workspace)
         .stdin(Stdio::null())
-        .stdout(Stdio::from(fs::File::create(stdout_path)?))
-        .stderr(Stdio::from(fs::File::create(stderr_path)?))
-        .spawn()?;
+        .stdout(Stdio::from(fs::File::create(stdout_path).doing(|| {
+            format!("opening the stdout log {}", stdout_path.display())
+        })?))
+        .stderr(Stdio::from(fs::File::create(stderr_path).doing(|| {
+            format!("opening the stderr log {}", stderr_path.display())
+        })?))
+        .spawn()
+        .doing(|| format!("starting `{}` in {}", program, workspace.display()))?;
     Ok(child)
 }
 
