@@ -77,6 +77,19 @@ known at the time.
 - **"Replay costs zero tokens" is not the pitch.** It collapses for the change people
   make most often — swapping the prompt or the model. Lead with divergence
   localisation instead.
+- **A state reference carries a grip, and grip only ever gets weaker** (#48). The
+  workspace is `captured`; a page, a simulator or an instrument is `witnessed` at best;
+  a world nobody reports is `opaque`. Composition takes the weakest part, exactly as
+  provenance does. The alternative — one state model that assumes a filesystem — was
+  already producing a quiet lie: restoring `browser/actions.jsonl` is not restoring the
+  page. See [environment-model.md](environment-model.md).
+- **A checkpoint answers three questions, not one** (#48). Reach, evidence, grounding.
+  Collapsing them into a single "can I branch here" loses the two answers people
+  actually need, and inventing a confidence number for the gap is the failure mode this
+  project exists to avoid.
+- **Re-driving a witnessed world is the adapter's job, and the engine cannot check it.**
+  Stated as a limit rather than papered over: the only source of truth about a world the
+  engine cannot see is the program that can.
 
 ## What we are deliberately not building
 

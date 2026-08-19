@@ -345,8 +345,14 @@ done, and the README says so.
 
 ## 9. Environment adapter strategy
 
+> **Superseded in part.** The contract this section sketches is now specified in
+> [`environment-model.md`](environment-model.md), which is normative where the two differ.
+> What is below remains accurate about *why* the wire protocol is the integration surface.
+
 The core knows nothing about flights, browsers, robots or laboratories. It knows `call`, `decide`,
-`result`, `finish`.
+`result`, `finish` — and `observe`, for the minority of environments carrying state *between* steps
+that the recorded effects do not capture. `observe` is what makes a step's state reference
+`witnessed` rather than `captured`: a fingerprint we can compare and can never put back.
 
 The adapter surface is **a wire protocol, not an SDK**. That is the anti-lock-in decision: the
 Python client is ~200 lines of stdlib and speaks NDJSON over `AF_UNIX`. Reimplementing it in Node,

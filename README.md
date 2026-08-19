@@ -51,6 +51,13 @@ to you, the tool is unaffected.
 instrumented Python programs and for real browser sessions — and it is explicit
 about where its knowledge stops. See [Limitations](#limitations).
 
+What it means for an environment to participate — what it must be able to do, what it
+may decline, and how a checkpoint says which — is the contract in
+[`docs/environment-model.md`](docs/environment-model.md).
+[`examples/reference/`](examples/reference/README.md) is that document made runnable:
+a hundred lines that record, reconstruct, branch and compare, in a world that can be
+re-driven and can never be put back.
+
 ---
 
 ## The example, end to end
@@ -80,13 +87,24 @@ CHECKPOINT run-1@2
   action       decide pick_flight = "FL-101"
   options      ["FL-101","FL-203","FL-311"]
   provenance   real
-  state        1 file(s) root 367c26441d
+  state        1 file(s) root 367c26441d · captured
                · notes/candidates.json
+
+  WHAT THIS CHECKPOINT GUARANTEES
+    reach        rebuild    re-execute the prefix; every input comes from the recording
+    evidence     captured   re-derived addresses are compared byte for byte
+    grounding    real
 
   EXPLORE FROM HERE
     noidroid branch run-1@2 --decide pick_flight=FL-203
     → what if it had chosen differently?
 ```
+
+Three separate questions, and a checkpoint answers them separately: **can I get back
+here**, **will I know if I got it wrong**, and **is what I get back to a claim about
+reality**. A Python program in a sandbox gets the strongest answer to all three. A
+browser page or a robot arm does not, and says so instead of rounding up — see
+[`docs/environment-model.md`](docs/environment-model.md).
 
 Take the other path:
 
@@ -466,6 +484,7 @@ nd.finish("success", {"picked": pick})
 | `call(target, run, effect=…)` | recorded, replayed instead of re-executed, and branchable |
 | `decide(name, options, choice)` | the *choice* becomes branchable |
 | `finish(status, result)` | the trajectory has an outcome worth comparing |
+| `observe(name, state)` | for the rare environment that carries state *between* steps — a page, a simulator, a reactor — and which almost nothing needs. See [`docs/environment-model.md`](docs/environment-model.md) §4.2 |
 
 `run` is invoked **only** when the engine says so, and during replay it never does.
 That is why a replay cannot touch the world: the guarantee lives in the protocol, not
@@ -523,10 +542,20 @@ faithful replay re-derives *the same objects*. `noidroid replay` reports
 (`key_mismatch`, `state_mismatch`, `unexpected_call`, `truncated`).
 
 **Branching is the data model, not a feature.** A step is
-`(parent, action, effects, state_root, provenance)`, addressed by its hash. A branch
+`(parent, action, effects, state, provenance)`, addressed by its hash. A branch
 is a step whose parent belongs to another trajectory. Immutable history, shared
 prefixes and copy-on-write all fall out of that; identical files and tool responses
 are stored once.
+
+**A state reference says what it is worth.** Most environments are not a directory, so
+a step records a *grip* alongside its state: `captured` (we hold the bytes and can put
+the world back), `witnessed` (we hold a fingerprint, so a reconstruction that lands
+elsewhere is detected and cannot be repaired), or `opaque` (nothing was captured, so
+re-execution still works and cannot be shown to have worked). Grip joins like
+provenance — the weakest part decides — and `noidroid show` answers three separate
+questions at a checkpoint: can I get back here, will I know if I got it wrong, and is
+what I get back to a claim about reality. The contract is
+[`docs/environment-model.md`](docs/environment-model.md).
 
 **Two kinds of honesty are tracked separately.** *Provenance* is a property of
 content and is part of the hash — `real` ⊑ `live` ⊑ `simulated` ⊑ `unknown`, joined
@@ -539,7 +568,10 @@ performed only during an original recording. Every replay and every branch refus
 unless you explicitly supply a stated-simulated value, which then poisons the
 provenance of everything downstream.
 
-Design reasoning, and where this disagrees with the manifesto, is in
+The environment contract — what an environment must satisfy to participate, what it
+may decline, and how the difference is represented rather than papered over — is
+[`docs/environment-model.md`](docs/environment-model.md). Design reasoning, and where
+this disagrees with the manifesto, is in
 [`docs/technical-proposal.md`](docs/technical-proposal.md).
 
 ---
@@ -556,7 +588,9 @@ cannot be vague about its own boundaries.
 - **Sequential programs only.** Threads, async races and concurrent interleavings are
   out of scope. A non-deterministic program will be reported as divergent, not
   silently mis-replayed.
-- **Only the sandboxed workspace is captured.** Unmediated writes *inside* it are
+- **Only the sandboxed workspace is *captured*.** Anything else an environment tells us
+  about is `witnessed` at best: comparable, never restorable. A world nobody reports is
+  `opaque`, and reported as such. Unmediated writes *inside* the workspace are
   detected by hash. Writes outside it — networks, databases, other directories — are
   neither captured nor detected.
 - **The ambient environment is not captured.** Environment variables, installed
@@ -624,9 +658,11 @@ because an object's name *is* the hash of its bytes.
 crates/noidroid-core/   objects, store, workspace trees, the record/replay/branch engine
 crates/noidroid-cli/    the `noidroid` binary, the palette, the viewer, the Stand
 clients/python/         the client (stdlib only) and the browser adapter
+examples/reference/     the reference environment: the whole lifecycle in 100 lines
 examples/flight_agent/  the example above
 examples/browser_agent/ the same idea driving real Chromium
-docs/                   technical proposal
+docs/                   the environment contract, the technical proposal, the direction
+research/               the scout's knowledge base: discoveries, landscape, recommendations
 manifesto.md            the product vision this is built toward
 ```
 
