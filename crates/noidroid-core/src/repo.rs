@@ -125,11 +125,25 @@ impl Repo {
 
     /// Materialise a trajectory's steps in execution order by walking parents from
     /// the head. The chain is a Merkle DAG, so this cannot loop.
+    ///
+    /// The version on each step is checked on the way in. `v` was written from the
+    /// first commit and never read, so a future build could have walked objects it
+    /// did not understand and reported the difference as the *program* diverging —
+    /// the exact confusion the version field exists to prevent.
     pub fn chain(&self, t: &Trajectory) -> Result<Vec<(Digest, Step)>> {
         let mut out = Vec::new();
         let mut cursor = Some(t.head.clone());
         while let Some(digest) = cursor {
             let step: Step = self.store.get_json(&digest)?;
+            if step.v != crate::model::STEP_VERSION {
+                return Err(Error::Refused(format!(
+                    "step {} was written in format v{}, and this build speaks v{}. \n                       Recordings are not migrated between formats; re-record, or use a \n                       build that speaks v{}.",
+                    digest.short(),
+                    step.v,
+                    crate::model::STEP_VERSION,
+                    step.v
+                )));
+            }
             cursor = step.parent.clone();
             out.push((digest, step));
         }

@@ -219,6 +219,94 @@ pub enum Intervention {
     Fail { error: String },
 }
 
+/// The ways a world commonly fails, named.
+///
+/// An agent that never validates a tool result treats whatever comes back as ground
+/// truth, so the interesting question is not "does it work" but "what does it do when
+/// the answer is a timeout, a 500, or JSON that does not parse". Those are branches
+/// like any other — this only saves the operator from writing the payload by hand,
+/// which is the difference between a thing people do and a thing people mean to.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Failure {
+    Timeout,
+    ServerError,
+    RateLimited,
+    Malformed,
+    Empty,
+    Unauthorized,
+}
+
+impl Failure {
+    pub const ALL: [Failure; 6] = [
+        Failure::Timeout,
+        Failure::ServerError,
+        Failure::RateLimited,
+        Failure::Malformed,
+        Failure::Empty,
+        Failure::Unauthorized,
+    ];
+
+    pub fn parse(name: &str) -> Option<Failure> {
+        match name.replace('_', "-").to_ascii_lowercase().as_str() {
+            "timeout" => Some(Failure::Timeout),
+            "server-error" | "500" => Some(Failure::ServerError),
+            "rate-limited" | "429" => Some(Failure::RateLimited),
+            "malformed" | "bad-json" => Some(Failure::Malformed),
+            "empty" => Some(Failure::Empty),
+            "unauthorized" | "401" => Some(Failure::Unauthorized),
+            _ => None,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Failure::Timeout => "timeout",
+            Failure::ServerError => "server-error",
+            Failure::RateLimited => "rate-limited",
+            Failure::Malformed => "malformed",
+            Failure::Empty => "empty",
+            Failure::Unauthorized => "unauthorized",
+        }
+    }
+
+    pub fn describes(self) -> &'static str {
+        match self {
+            Failure::Timeout => "the call never came back",
+            Failure::ServerError => "the service answered 500",
+            Failure::RateLimited => "the service answered 429",
+            Failure::Malformed => "the answer was not the shape it should be",
+            Failure::Empty => "the answer was well formed and said nothing",
+            Failure::Unauthorized => "the credential was refused",
+        }
+    }
+
+    /// What the agent receives. A raised error for the ones a client would raise, and
+    /// a *value* for the ones that come back looking fine — `empty` and `malformed`
+    /// are the interesting cases precisely because nothing throws.
+    pub fn as_intervention(self) -> Intervention {
+        match self {
+            Failure::Timeout => Intervention::Fail {
+                error: "the call timed out".to_string(),
+            },
+            Failure::ServerError => Intervention::Fail {
+                error: "HTTP 500 from the service".to_string(),
+            },
+            Failure::RateLimited => Intervention::Fail {
+                error: "HTTP 429: rate limited".to_string(),
+            },
+            Failure::Unauthorized => Intervention::Fail {
+                error: "HTTP 401: credential refused".to_string(),
+            },
+            Failure::Malformed => Intervention::ReplaceResult {
+                value: serde_json::Value::String("{\"unterminated\": ".to_string()),
+            },
+            Failure::Empty => Intervention::ReplaceResult {
+                value: serde_json::Value::Null,
+            },
+        }
+    }
+}
+
 impl Intervention {
     pub fn summary(&self) -> String {
         match self {
@@ -343,6 +431,10 @@ pub struct Trajectory {
     /// Recorded with automatic capture, so reconstructing it needs the same hooks.
     #[serde(default)]
     pub auto: bool,
+    /// Recorded with known capture gaps, deliberately. Carried so that replaying it
+    /// makes the same allowance — otherwise a reconstruction of it would refuse.
+    #[serde(default)]
+    pub allow_gaps: bool,
     /// The directory this run was recorded in, when it was the caller's own rather
     /// than a sandbox. It is where `restore` puts the files back by default.
     #[serde(default)]

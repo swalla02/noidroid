@@ -161,6 +161,10 @@ fn a_program_with_no_noidroid_code_records_and_replays() {
         env: vec![
             ("PYTHONPATH".into(), pythonpath.clone()),
             ("FAKE_API".into(), format!("http://127.0.0.1:{PORT}")),
+            // This agent only uses the sync client, and the async surface we cannot
+            // cover would otherwise refuse the recording — which is the point of the
+            // refusal, and why saying so explicitly is the honest way past it.
+            ("NOIDROID_ALLOW_GAPS".into(), "1".into()),
         ],
         auto: true,
         watch: None,
@@ -204,6 +208,87 @@ fn a_program_with_no_noidroid_code_records_and_replays() {
         0,
         "nothing may be executed during a replay; the API is not even running"
     );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_capture_gap_stops_the_recording_unless_it_is_allowed() {
+    if !sdk_available() {
+        eprintln!("SKIP: needs the anthropic SDK (pip install anthropic)");
+        return;
+    }
+
+    let dir = std::env::temp_dir().join(format!(
+        "noidroid-gaps-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::create_dir_all(&dir).unwrap();
+    // Importing the SDK brings an async client into the process. We patch only the
+    // sync surface, so this program has a hole we cannot cover.
+    let agent = dir.join("agent.py");
+    fs::write(
+        &agent,
+        "import anthropic\nimport noidroid\nnd = noidroid.connect()\n\
+         nd.call('work.do', lambda: {'ok': True})\nnd.finish('success', {})\n",
+    )
+    .unwrap();
+
+    let repo = Repo::open(&dir).unwrap();
+    let pythonpath = format!("{}:{}", bootstrap_path().display(), client_path().display());
+    let spec = |name: &str, allow: bool| {
+        let mut env = vec![("PYTHONPATH".to_string(), pythonpath.clone())];
+        if allow {
+            env.push(("NOIDROID_ALLOW_GAPS".to_string(), "1".to_string()));
+        }
+        RunSpec {
+            command: vec!["python3".into(), agent.display().to_string()],
+            launch_dir: dir.clone(),
+            name: Some(name.to_string()),
+            env,
+            auto: true,
+            watch: None,
+        }
+    };
+
+    // Fail closed. A recording that quietly missed a surface still looks real and
+    // still claims to replay faithfully, which is the failure this cannot survive.
+    let refused = engine::run(&repo, &spec("blocked", false), Mode::Record, None);
+    match refused {
+        Err(e) => {
+            let said = e.to_string();
+            assert!(
+                said.contains("AsyncAPIClient") && said.contains("--allow-gaps"),
+                "the refusal must name the surface and the way past it, got: {said}"
+            );
+        }
+        Ok(_) => panic!("recording should have been refused while a surface is unhooked"),
+    }
+    assert!(
+        repo.load_trajectory("blocked").is_err(),
+        "a refused recording leaves nothing behind"
+    );
+
+    // Escapable on purpose, and the allowance is remembered so replaying it does not
+    // refuse in turn.
+    let allowed = engine::run(&repo, &spec("gapped", true), Mode::Record, None)
+        .expect("--allow-gaps should record")
+        .trajectory
+        .expect("a recording produces a trajectory");
+    assert!(
+        allowed.allow_gaps,
+        "the allowance is part of what was recorded"
+    );
+
+    let mut replay = spec("unused", true);
+    replay.name = None;
+    let report = engine::run(&repo, &replay, Mode::Replay, Some(&allowed))
+        .expect("replay should run to completion");
+    assert!(report.faithful(), "{:?}", report.divergences);
 
     let _ = fs::remove_dir_all(&dir);
 }
