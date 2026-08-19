@@ -587,3 +587,38 @@ fn a_branch_from_an_unreachable_checkpoint_leaves_nothing_behind() {
     // The parent is exactly as it was.
     assert_eq!(f.repo.load_trajectory("run-1").unwrap(), parent);
 }
+
+/// The tool's own failures should read as well as the ones it reports about others.
+/// `No such file or directory` names none of the operations that can produce it, so
+/// an I/O failure has to say what it was doing.
+#[test]
+fn an_io_failure_says_what_it_was_doing() {
+    let dir = std::env::temp_dir().join(format!(
+        "noidroid-ioctx-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::create_dir_all(&dir).unwrap();
+    let repo = Repo::open(&dir).unwrap();
+
+    // A program that is not there: the failure is a bare ENOENT from the OS.
+    let spec = RunSpec {
+        command: vec!["definitely-not-a-real-program-9fd2".into()],
+        launch_dir: dir.clone(),
+        name: Some("nope".into()),
+        env: Vec::new(),
+        auto: false,
+        watch: None,
+    };
+    let err = engine::run(&repo, &spec, Mode::Record, None).expect_err("no such program");
+    let said = err.to_string();
+    assert!(
+        said.contains("starting `definitely-not-a-real-program-9fd2`"),
+        "an io failure must name the operation, said: {said}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
