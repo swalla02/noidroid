@@ -144,6 +144,9 @@ pub struct RunSpec {
     /// Extra environment for the child. The ambient environment is *not* captured,
     /// so anything a run depends on here must be supplied again to reconstruct it.
     pub env: Vec<(String, String)>,
+    /// Recorded with automatic capture. Carried onto the trajectory so that replaying
+    /// it installs the same hooks; without them a replay would mediate nothing.
+    pub auto: bool,
 }
 
 /// Execute `spec` in `mode`, against `source` when reconstructing.
@@ -302,6 +305,7 @@ pub fn run(repo: &Repo, spec: &RunSpec, mode: Mode, source: Option<&Trajectory>)
                 } => vec![(*at, intervention.clone())],
                 _ => Vec::new(),
             },
+            auto: spec.auto,
         };
         repo.save_trajectory(&trajectory)?;
         repo.save_notes(&name, &session.notes)?;
@@ -490,18 +494,13 @@ impl<'a> Session<'a> {
             });
         };
         if actions_agree(&recorded.action, action) {
-            Ok(())
-        } else {
-            Err(Divergence {
-                index: self.index,
-                kind: DivergenceKind::KeyMismatch,
-                detail: format!(
-                    "recorded {} but this run wants {}",
-                    recorded.action.summary(),
-                    action.summary()
-                ),
-            })
+            return Ok(());
         }
+        Err(Divergence {
+            index: self.index,
+            kind: DivergenceKind::KeyMismatch,
+            detail: describe_mismatch(&recorded.action, action, self.recorded, self.index),
+        })
     }
 
     fn on_divergence(&mut self, d: Divergence) -> Result<Response> {
@@ -1007,6 +1006,141 @@ fn actions_agree(recorded: &Action, incoming: &Action) -> bool {
         (Action::Finish { .. }, Action::Finish { .. }) => true,
         _ => false,
     }
+}
+
+/// Say what actually differs, field by field.
+///
+/// "recorded X but this run wants Y" is true and useless once the arguments are more
+/// than a few characters: the reader has to diff two long lines by eye. Every
+/// record/replay tool that has been used in anger ends up here — it is the single
+/// most complained-about thing about the ones that did not.
+fn describe_mismatch(
+    recorded: &Action,
+    incoming: &Action,
+    chain: &[(Digest, Step)],
+    index: u64,
+) -> String {
+    let mut lines: Vec<String> = Vec::new();
+
+    match (recorded, incoming) {
+        (
+            Action::Call {
+                target: was,
+                args: was_args,
+                effect: was_effect,
+            },
+            Action::Call {
+                target: now,
+                args: now_args,
+                effect: now_effect,
+            },
+        ) => {
+            if was != now {
+                lines.push(format!("target: recorded {was:?}, got {now:?}"));
+            }
+            if was_effect != now_effect {
+                lines.push(format!(
+                    "effect: recorded {}, got {}",
+                    was_effect.label(),
+                    now_effect.label()
+                ));
+            }
+            lines.extend(diff_values("args", was_args, now_args));
+        }
+        (
+            Action::Decide {
+                name: was,
+                options: was_options,
+                ..
+            },
+            Action::Decide {
+                name: now,
+                options: now_options,
+                ..
+            },
+        ) => {
+            if was != now {
+                lines.push(format!("decision: recorded {was:?}, got {now:?}"));
+            }
+            lines.extend(diff_values("options", was_options, now_options));
+        }
+        (was, now) => lines.push(format!(
+            "recorded {} but this run wants {}",
+            was.summary(),
+            now.summary()
+        )),
+    }
+
+    // The most common cause of a mismatch is an inserted or removed interaction, not
+    // a changed one. If what the run wants is sitting further along the recording,
+    // say so — it turns a puzzle into a one-line explanation.
+    if let Some(found) = chain
+        .iter()
+        .enumerate()
+        .skip(index as usize + 1)
+        .find(|(_, (_, step))| actions_agree(&step.action, incoming))
+        .map(|(i, _)| i)
+    {
+        lines.push(format!(
+            "this call is recorded at step {found}; it looks like {} interaction(s) \
+             were removed",
+            found as u64 - index
+        ));
+    } else if chain
+        .iter()
+        .take(index as usize)
+        .any(|(_, step)| actions_agree(&step.action, incoming))
+    {
+        lines.push("this call already happened earlier in the recording".to_string());
+    }
+
+    if lines.is_empty() {
+        return "the actions differ".to_string();
+    }
+    format!("\n      {}", lines.join("\n      "))
+}
+
+/// Field-by-field for objects; whole-value otherwise.
+fn diff_values(label: &str, was: &Value, now: &Value) -> Vec<String> {
+    if was == now {
+        return Vec::new();
+    }
+    let (Value::Object(was_map), Value::Object(now_map)) = (was, now) else {
+        return vec![format!(
+            "{label}: recorded {}, got {}",
+            crate::model::compact_value(was),
+            crate::model::compact_value(now)
+        )];
+    };
+
+    let mut lines = Vec::new();
+    for (key, value) in was_map {
+        match now_map.get(key) {
+            None => lines.push(format!(
+                "{label}.{key}: recorded {}, absent now",
+                compact(value)
+            )),
+            Some(other) if other != value => lines.push(format!(
+                "{label}.{key}: recorded {}, got {}",
+                compact(value),
+                compact(other)
+            )),
+            Some(_) => {}
+        }
+    }
+    for key in now_map.keys() {
+        if !was_map.contains_key(key) {
+            lines.push(format!(
+                "{label}.{key}: not recorded, got {}",
+                compact(&now_map[key])
+            ));
+        }
+    }
+    lines
+}
+
+fn compact(value: &Value) -> String {
+    crate::model::compact_value(value)
 }
 
 fn spawn(

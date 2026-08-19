@@ -113,6 +113,7 @@ impl Fixture {
             launch_dir: self.dir.clone(),
             name: name.map(|n| n.to_string()),
             env: self.env(extra),
+            auto: false,
         }
     }
 

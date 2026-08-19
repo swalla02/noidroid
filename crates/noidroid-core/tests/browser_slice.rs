@@ -18,6 +18,19 @@ use noidroid_core::engine::{self, Mode, RunSpec};
 use noidroid_core::model::{Intervention, Provenance, Trajectory};
 use noidroid_core::Repo;
 
+/// One browser at a time.
+///
+/// Each test in this file launches Chromium and drives a real page; three at once on
+/// a loaded machine produces timeouts that look like product bugs and are not. Test
+/// binaries run their tests in parallel by default, so this is the guard.
+static BROWSER: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn one_at_a_time() -> std::sync::MutexGuard<'static, ()> {
+    BROWSER
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
@@ -173,6 +186,7 @@ impl Fixture {
                     },
                 ),
             ],
+            auto: false,
         }
     }
 
@@ -230,6 +244,7 @@ impl Drop for Fixture {
 
 #[test]
 fn a_browser_session_reconstructs_from_recorded_responses_alone() {
+    let _serial = one_at_a_time();
     if !browser_available() {
         eprintln!(
             "SKIP: browser adapter test needs playwright and chromium \
@@ -305,6 +320,7 @@ fn a_browser_session_reconstructs_from_recorded_responses_alone() {
 
 #[test]
 fn a_browser_branch_can_reach_a_different_outcome() {
+    let _serial = one_at_a_time();
     if !browser_available() {
         eprintln!("SKIP: browser adapter test needs playwright and chromium");
         return;
@@ -339,6 +355,7 @@ fn a_browser_branch_can_reach_a_different_outcome() {
 
 #[test]
 fn a_page_that_cannot_be_reproduced_makes_everything_after_it_unknown() {
+    let _serial = one_at_a_time();
     if !browser_available() {
         eprintln!("SKIP: browser adapter test needs playwright and chromium");
         return;

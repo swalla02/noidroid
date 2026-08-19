@@ -340,6 +340,9 @@ pub struct Trajectory {
     pub outcome: Outcome,
     #[serde(default)]
     pub interventions: Vec<(u64, Intervention)>,
+    /// Recorded with automatic capture, so reconstructing it needs the same hooks.
+    #[serde(default)]
+    pub auto: bool,
 }
 
 /// Per-run, non-content observations: how each step was delivered and how long it took.
