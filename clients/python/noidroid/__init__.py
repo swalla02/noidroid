@@ -29,6 +29,11 @@ Typical use::
 
     nd.finish("success", {"booked": pick})
 
+Those three -- ``call``, ``decide``, ``finish`` -- are the whole mandatory contract.
+There is a fourth, ``observe``, which almost nothing should use: it is for an
+environment carrying state *between* steps that the recorded effects do not capture,
+such as a browser page or a simulator. See ``docs/environment-model.md`` §4.2.
+
 Running the same script without ``noidroid run`` is fine: ``connect()`` returns a
 pass-through session that simply executes everything and records nothing.
 """
@@ -60,10 +65,13 @@ PROTOCOL_VERSION = 1
 
 #: Observes; repeating it changes nothing.
 READ = "read"
-#: Mutates the sandboxed workspace; reversible because the sandbox belongs to Paranoid Android.
+#: Mutates a world we can put back -- the sandboxed workspace, or an environment that
+#: re-driving rebuilds. It is a claim about *reversibility under reconstruction*, not
+#: about touching a disk: a browser navigation is a write because re-driving the
+#: recorded actions rebuilds the page.
 WRITE = "write"
-#: Leaves the sandbox -- payments, mail, production writes, physical actuation.
-#: Never performed during replay, denied by default while branching.
+#: Leaves a mark we cannot take back -- payments, mail, production writes, physical
+#: actuation. Never performed during replay, denied by default while branching.
 IRREVERSIBLE = "irreversible"
 
 
@@ -169,7 +177,7 @@ class Session:
             raise NoidroidError(detail)
         return response
 
-    # -- the three things an application declares ---------------------------
+    # -- what an application declares ---------------------------------------
 
     def call(
         self,
@@ -248,6 +256,39 @@ class Session:
         )
         return response.get("value", choice)
 
+    def observe(self, of: str, state: Any = None, restorable: bool = False) -> None:
+        """Report what the world you can see looks like now.
+
+        Paranoid Android cannot look at a browser page, a simulator or an instrument.
+        This is how you tell it what is true out there, and how much that testimony is
+        worth. The observation is recorded at ``.world/<of>.json`` inside the step's
+        state, so it is content-addressed, inspectable and compared automatically on
+        every reconstruction.
+
+        ``state=None`` declares the world and says plainly that you are *not* observing
+        it. That is ``opaque``: reconstruction is still possible and simply cannot be
+        shown to have worked. It is a legitimate answer and a fabricated fingerprint is
+        not.
+
+        **Most programs should never call this.** Declare a world only when state
+        persists inside the environment across steps *and* is not carried by the
+        recorded effects. A model provider needs no world -- every call is independent
+        and its answer is recorded. A browser does: the page persists and is read
+        later. See ``docs/environment-model.md`` §4.2.
+
+        Report what must be true for a reconstruction to count, not everything that is
+        true. A fingerprint containing a clock makes every reconstruction diverge,
+        which is accurate and useless.
+        """
+        self._rpc(
+            {
+                "op": "observe",
+                "of": of,
+                "state": state,
+                "restorable": restorable,
+            }
+        )
+
     def finish(self, status: str, result: Any = None) -> None:
         """Record the application's own verdict on how the execution went."""
         self._rpc({"op": "finish", "status": status, "result": result})
@@ -285,6 +326,9 @@ class _PassThrough:
 
     def decide(self, name, options, choice):  # noqa: D102
         return choice
+
+    def observe(self, of, state=None, restorable=False):  # noqa: D102
+        return None
 
     def finish(self, status, result=None):  # noqa: D102
         return None

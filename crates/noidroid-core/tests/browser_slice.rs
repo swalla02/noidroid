@@ -15,8 +15,9 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use noidroid_core::engine::{self, Mode, RunSpec};
+use noidroid_core::env::{Grip, Situation};
 use noidroid_core::model::{Intervention, Provenance, Trajectory};
-use noidroid_core::Repo;
+use noidroid_core::{tree, Repo};
 
 /// One browser at a time.
 ///
@@ -39,25 +40,22 @@ fn repo_root() -> PathBuf {
 }
 
 /// Chromium is a large optional dependency; say so rather than failing.
+///
+/// The probe launches a browser rather than looking for one. A downloaded Chromium
+/// that cannot start -- the usual cause is a host missing `libnspr4` and friends, which
+/// `playwright install` does not bring -- looks exactly like an installed one on disk,
+/// and the tests below then fail with an agent that "aborted" for no stated reason.
+/// Skipping is the honest outcome; a green suite that never ran the browser is not.
 fn browser_available() -> bool {
     let probe = Command::new("python3")
-        .args(["-c", "import playwright"])
+        .args([
+            "-c",
+            "from playwright.sync_api import sync_playwright\n             with sync_playwright() as p:\n             \x20   p.chromium.launch().close()",
+        ])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();
-    if !matches!(probe, Ok(s) if s.success()) {
-        return false;
-    }
-    let cache = std::env::var("HOME")
-        .map(|h| PathBuf::from(h).join(".cache/ms-playwright"))
-        .unwrap_or_default();
-    fs::read_dir(&cache)
-        .map(|entries| {
-            entries
-                .filter_map(|e| e.ok())
-                .any(|e| e.file_name().to_string_lossy().starts_with("chromium"))
-        })
-        .unwrap_or(false)
+    matches!(probe, Ok(s) if s.success())
 }
 
 /// An agent that looks at a page which cannot be reproduced, then makes a decision.
@@ -266,6 +264,32 @@ fn a_browser_session_reconstructs_from_recorded_responses_alone() {
         recorded.outcome.status, "failure",
         "the agent picks a sold-out flight"
     );
+
+    // The page is declared to the core as a world it can compare and can never put
+    // back. This is the whole reason the browser is the load-bearing example: the
+    // workspace holds the network log and the artifacts, and none of that is the page.
+    assert_eq!(
+        recorded
+            .worlds
+            .iter()
+            .map(|w| (w.name.as_str(), w.grip))
+            .collect::<Vec<_>>(),
+        vec![("browser", Grip::Witnessed)],
+        "a browser trajectory says what it would take to return to it"
+    );
+    let page_step = f
+        .repo
+        .chain(&recorded)
+        .unwrap()
+        .into_iter()
+        .find(|(_, s)| s.grip == Grip::Witnessed)
+        .expect("every step after the first action is witnessed");
+    assert!(
+        !Situation::worlds_in(&tree::read(&page_step.1.state_root, &f.repo.store).unwrap())
+            .is_empty(),
+        "and carries the page fingerprint in its recorded state"
+    );
+
     let at = f.decision_step(&recorded);
 
     // 2. Take the site away. Anything that still works from here is reconstruction,
