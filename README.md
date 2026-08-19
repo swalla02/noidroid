@@ -411,6 +411,13 @@ $ noidroid run --auto -- python3 agent.py
   Record it anyway with --allow-gaps if you know your program does not use them.
 ```
 
+And during a replay the network is fenced: an outbound socket to anything but
+loopback is refused, because a reconstruction is supposed to serve every input from
+the recording and touch nothing. A blocked connection is not an inconvenience — it is
+proof that something was never recorded, and the report says which address tried to
+leave. It cannot see subprocesses, C extensions that bypass Python's socket module, or
+connections opened before the client loaded.
+
 `--allow-gaps` is the way past it, and the allowance is stored on the trajectory so
 replaying it makes the same one. Refusing costs you a run; recording anyway costs the
 trust in every run, because a trajectory that missed the model calls still looks real

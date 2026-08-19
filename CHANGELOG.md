@@ -7,6 +7,22 @@ how the package version relates to `STEP_VERSION`, the on-disk object format.
 
 ## [Unreleased]
 
+### Added
+
+- **The egress fence.** During a replay or a branch, an outbound socket to anything
+  but loopback is refused. A reconstruction is supposed to serve every mediated input from the
+  recording and touch nothing, but that was only enforced for calls that went
+  *through* the protocol — anything a program did behind our back still reached the
+  network, and nothing said so. The replay finished and reported itself faithful. That
+  was the worst failure mode here, because it was the silent one. Loopback stays open
+  for our own socket, the proxy and local stand-ins; recordings are never fenced,
+  since reaching the world is what they are recording.
+  Blind spots, stated rather than hidden: subprocesses do not inherit the patch, C
+  extensions can bypass Python's socket module, and connections opened before the
+  client loads escape it.
+- A run that dies mid-way now reports **what the program said on the way out**.
+  "Truncated" is true and explains nothing; the traceback usually is the explanation.
+
 ### Fixed
 
 - An I/O failure now says what it was doing and on what path. `No such file or
