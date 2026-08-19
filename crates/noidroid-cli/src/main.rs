@@ -206,7 +206,18 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
             watch,
             proxy,
             command,
-        } => cmd_run(&repo, &cwd, name, auto, allow_gaps, watch, proxy, command),
+        } => cmd_run(
+            &repo,
+            &cwd,
+            RunFlags {
+                name,
+                auto,
+                allow_gaps,
+                watch,
+                proxy,
+            },
+            command,
+        ),
         Command::Log { trajectory } => cmd_log(&repo, trajectory),
         Command::Show { reference } => cmd_show(&repo, &reference),
         Command::Replay { trajectory } => cmd_replay(&repo, &cwd, &trajectory),
@@ -302,16 +313,24 @@ fn auto_capture_env() -> Result<Vec<(String, String)>> {
     Ok(vec![("PYTHONPATH".to_string(), joined)])
 }
 
-fn cmd_run(
-    repo: &Repo,
-    cwd: &Path,
+/// How a recording was asked for. Grouped because these travel together and there
+/// are now enough of them that a positional list is a bug waiting to be written.
+struct RunFlags {
     name: Option<String>,
     auto: bool,
     allow_gaps: bool,
     watch: Option<PathBuf>,
     proxy: Option<String>,
-    command: Vec<String>,
-) -> Result<ExitCode> {
+}
+
+fn cmd_run(repo: &Repo, cwd: &Path, flags: RunFlags, command: Vec<String>) -> Result<ExitCode> {
+    let RunFlags {
+        name,
+        auto,
+        allow_gaps,
+        watch,
+        proxy,
+    } = flags;
     let name = name.unwrap_or_else(|| repo.next_name("run"));
     if repo.has_trajectory(&name) {
         return Err(Error::Refused(format!(
