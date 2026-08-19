@@ -169,6 +169,37 @@ See [`examples/browser_agent/`](examples/browser_agent/README.md). The adapter n
 
 ---
 
+## Rewinding the files, not the conversation
+
+The most-requested thing on coding-agent trackers is not undoing the chat — it is
+undoing what the agent did to your files. Point a recording at your actual project:
+
+```console
+$ noidroid run --watch . -- python3 my_agent.py
+    1 ● call edit.bump()      real  executed
+    2 ● call edit.break()     real  executed
+    3 ✘ finish failure        real  executed
+
+$ noidroid restore run-1@1
+restored /home/you/project to run-1@1
+  ~ src/app.py
+
+  the files that were here are saved; to put them back:
+    noidroid checkout-tree 18bb309cbb… /home/you/project
+```
+
+The watched directory is read, never cleared. `.git`, `node_modules`, `target` and
+friends are skipped — extend the list with a `.noidroidignore` — and, crucially, they
+are skipped when *restoring* too: what was never recorded is never removed. Restoring
+snapshots what is currently there first and prints its address, so the way back is one
+command and nothing is destroyed.
+
+Reconstructing is different from restoring. A replay or a branch re-executes your
+program, which writes files, so those always run in their own copy — never in the
+directory you are sitting in front of.
+
+---
+
 ## The viewer
 
 ```bash

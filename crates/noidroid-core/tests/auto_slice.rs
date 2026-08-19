@@ -163,6 +163,7 @@ fn a_program_with_no_noidroid_code_records_and_replays() {
             ("FAKE_API".into(), format!("http://127.0.0.1:{PORT}")),
         ],
         auto: true,
+        watch: None,
     };
 
     // 1. Record against the live stand-in.

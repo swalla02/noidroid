@@ -69,6 +69,7 @@ impl Fixture {
                 ),
             ],
             auto: false,
+            watch: None,
         }
     }
 }

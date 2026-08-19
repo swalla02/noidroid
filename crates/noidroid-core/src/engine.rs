@@ -147,6 +147,11 @@ pub struct RunSpec {
     /// Recorded with automatic capture. Carried onto the trajectory so that replaying
     /// it installs the same hooks; without them a replay would mediate nothing.
     pub auto: bool,
+    /// Record a directory the caller already has — a real project — instead of a
+    /// sandbox we made. Only ever honoured while *recording*: reconstructing into
+    /// somebody's working tree would overwrite the files they are sitting in front
+    /// of, so replays and branches always get their own copy.
+    pub watch: Option<PathBuf>,
 }
 
 /// Execute `spec` in `mode`, against `source` when reconstructing.
@@ -164,16 +169,29 @@ pub fn run(repo: &Repo, spec: &RunSpec, mode: Mode, source: Option<&Trajectory>)
     });
 
     // Every run gets its own workspace. A branch cannot reach into its parent's.
-    let workspace = match &mode {
-        Mode::Replay => repo
+    // The exception is a watched directory during a recording: that one belongs to
+    // the caller, so it is read, never cleared.
+    let watching = matches!(mode, Mode::Record) && spec.watch.is_some();
+    let workspace = match (&mode, &spec.watch) {
+        (Mode::Record, Some(dir)) => dir.clone(),
+        (Mode::Replay, _) => repo
             .tmp_dir()
             .join(format!("replay-{}", std::process::id())),
         _ => repo.workspace_dir(&run_label),
     };
-    if workspace.exists() {
-        fs::remove_dir_all(&workspace)?;
+    if !watching {
+        if workspace.exists() {
+            fs::remove_dir_all(&workspace)?;
+        }
+        fs::create_dir_all(&workspace)?;
     }
-    fs::create_dir_all(&workspace)?;
+    // A watched directory is somebody's project, so the parts that dwarf the source
+    // are skipped. A sandbox holds only what the run put there, so nothing is.
+    let ignores = if watching {
+        tree::Ignores::for_directory(&workspace)
+    } else {
+        tree::Ignores::none()
+    };
     // Reconstruction starts from the world the recording started from.
     if let Some(t) = source {
         let genesis: Step = repo.store.get_json(&t.genesis)?;
@@ -201,6 +219,7 @@ pub fn run(repo: &Repo, spec: &RunSpec, mode: Mode, source: Option<&Trajectory>)
         mode: &mode,
         recorded: &recorded,
         workspace: workspace.clone(),
+        ignores,
         parent: None,
         parent_provenance: Provenance::Real,
         index: 0,
@@ -306,6 +325,7 @@ pub fn run(repo: &Repo, spec: &RunSpec, mode: Mode, source: Option<&Trajectory>)
                 _ => Vec::new(),
             },
             auto: spec.auto,
+            watched: if watching { spec.watch.clone() } else { None },
         };
         repo.save_trajectory(&trajectory)?;
         repo.save_notes(&name, &session.notes)?;
@@ -321,6 +341,7 @@ struct Session<'a> {
     mode: &'a Mode,
     recorded: &'a [(Digest, Step)],
     workspace: PathBuf,
+    ignores: tree::Ignores,
     parent: Option<Digest>,
     parent_provenance: Provenance,
     index: u64,
@@ -870,7 +891,7 @@ impl<'a> Session<'a> {
         suppressed_side_effect: bool,
     ) -> Result<()> {
         let started = Instant::now();
-        let actual_root = tree::snapshot(&self.workspace, &self.repo.store)?;
+        let actual_root = tree::snapshot_with(&self.workspace, &self.repo.store, &self.ignores)?;
         let expected = self.recorded.get(self.index as usize).cloned();
 
         let state_root = match (&expected, suppressed_side_effect) {
