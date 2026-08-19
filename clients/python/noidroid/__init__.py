@@ -49,6 +49,8 @@ __all__ = [
     "InjectedFailure",
     "Unavailable",
     "Ungrounded",
+    "VOLATILE",
+    "mask_volatile",
     "READ",
     "WRITE",
     "IRREVERSIBLE",
@@ -79,6 +81,30 @@ class Divergence(NoidroidError):
 
 class InjectedFailure(NoidroidError):
     """A branch deliberately made this interaction fail."""
+
+
+#: Stands in for a value deliberately left out of a call's identity.
+VOLATILE = "<volatile>"
+
+
+def mask_volatile(args: dict, volatile: Optional[Iterable[str]]) -> dict:
+    """Replace volatile keys with a marker, at any depth.
+
+    Nested because request payloads bury their timestamps: `{"meta": {"ts": ...}}` is
+    at least as common as a top-level one.
+    """
+    keys = set(volatile or ())
+    if not keys:
+        return args
+    return _mask(args, keys)
+
+
+def _mask(value: Any, keys: set) -> Any:
+    if isinstance(value, dict):
+        return {k: (VOLATILE if k in keys else _mask(v, keys)) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_mask(v, keys) for v in value]
+    return value
 
 
 class Ungrounded:
@@ -151,14 +177,30 @@ class Session:
         run: Callable[[], Any],
         args: Optional[dict] = None,
         effect: str = READ,
+        volatile: Optional[Iterable[str]] = None,
     ) -> Any:
         """Mediate one interaction with the world.
 
         ``run`` is invoked only if Paranoid Android says to. Its return value must be
         JSON-serialisable: that is what gets stored, replayed and branched.
+
+        ``volatile`` names argument keys that change every run without changing what
+        the call means — a timestamp, a request id, a nonce. They are replaced with a
+        marker *before* anything is recorded, so the same call still identifies as the
+        same call on the next run. Without this, an argument carrying a clock makes
+        every replay diverge, which is technically true and practically useless.
+
+        The trade is explicit: a volatile value is excluded from the trajectory, so
+        you cannot inspect it later. Anything you might want to read afterwards
+        belongs in the response, which is recorded in full.
         """
         response = self._rpc(
-            {"op": "call", "target": target, "args": args or {}, "effect": effect}
+            {
+                "op": "call",
+                "target": target,
+                "args": mask_volatile(args or {}, volatile),
+                "effect": effect,
+            }
         )
         directive = response.get("directive")
         if directive == "execute":

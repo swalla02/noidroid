@@ -115,6 +115,7 @@ class Model:
         *,
         tools: Optional[Sequence[str]] = None,
         decide_tool: bool = True,
+        volatile: Optional[Sequence[str]] = None,
     ) -> Any:
         """Perform one model call, or serve the recorded one.
 
@@ -129,6 +130,7 @@ class Model:
             lambda: as_jsonable(run()),
             args={"call": self._calls, **(request or {})},
             effect=READ,
+            volatile=volatile,
         )
         self._account(response)
 

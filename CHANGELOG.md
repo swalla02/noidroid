@@ -9,6 +9,25 @@ how the package version relates to `STEP_VERSION`, the on-disk object format.
 
 ### Added
 
+- **`noidroid run --auto`: zero-code recording.** A `sitecustomize.py` goes on the
+  child's `PYTHONPATH` — the mechanism `opentelemetry-instrument` and `ddtrace-run`
+  use — and patches the OpenAI and Anthropic base clients at `request`, below the
+  retry loop, so one logical call is one recorded step however many times it retried.
+  A program that never mentions Paranoid Android can now be recorded and replayed; the
+  SDK's own response type is rebuilt on replay, so `reply.content[0].text` still
+  works. Tested against the real Anthropic SDK with the API shut down.
+  It cannot make anything *branchable*: no patching can infer that a value was a
+  choice among alternatives, so `decide()` stays explicit. The honest shape is
+  **zero code to record and replay, two lines to branch**.
+- **`volatile=` on `call`** — names arguments that change every run without changing
+  what the call means, such as a timestamp or a request id. Without it an argument
+  carrying a clock makes every replay diverge, which is true and useless.
+- **Divergence reports say what differed**, field by field, and point out when the
+  call the run wants is recorded further along — which usually means an interaction
+  was inserted or removed, rather than changed.
+
+### Added
+
 - **`noidroid tui`** — the viewer the manifesto calls V0.1, built with
   [ratatui](https://ratatui.rs). Three panes and one verb: the timeline is coloured by
   provenance, and pressing `e` on a recorded decision reconstructs the prefix,

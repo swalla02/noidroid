@@ -223,6 +223,7 @@ impl<'a> App<'a> {
             launch_dir: self.cwd.clone(),
             name: Some(label.clone()),
             env: Vec::new(),
+            auto: false,
         };
         let outcome = engine::run(
             self.repo,
@@ -272,6 +273,7 @@ impl<'a> App<'a> {
             launch_dir: self.cwd.clone(),
             name: None,
             env: Vec::new(),
+            auto: false,
         };
         match engine::run(self.repo, &spec, Mode::Replay, Some(&t)) {
             Ok(report) if report.faithful() => {

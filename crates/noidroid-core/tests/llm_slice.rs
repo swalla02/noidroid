@@ -57,6 +57,7 @@ impl Fixture {
                 "PYTHONPATH".into(),
                 self.root.join("clients/python").display().to_string(),
             )],
+            auto: false,
         }
     }
 

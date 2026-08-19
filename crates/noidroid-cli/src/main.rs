@@ -42,6 +42,10 @@ enum Command {
         /// Name for the trajectory (default: run-N).
         #[arg(long)]
         name: Option<String>,
+        /// Capture supported SDK calls without changing your program. Records and
+        /// replays; branching still needs a declared decision.
+        #[arg(long)]
+        auto: bool,
         /// The command to run, after `--`.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
         command: Vec<String>,
@@ -135,7 +139,11 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
     let cwd = std::env::current_dir()?;
     let repo = Repo::discover(&cwd)?;
     match cli.command {
-        Command::Run { name, command } => cmd_run(&repo, &cwd, name, command),
+        Command::Run {
+            name,
+            auto,
+            command,
+        } => cmd_run(&repo, &cwd, name, auto, command),
         Command::Log { trajectory } => cmd_log(&repo, trajectory),
         Command::Show { reference } => cmd_show(&repo, &reference),
         Command::Replay { trajectory } => cmd_replay(&repo, &cwd, &trajectory),
@@ -164,10 +172,45 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
     }
 }
 
+/// Locate the bootstrap directory inside the installed Python client.
+///
+/// The same trick as `opentelemetry-instrument`: a directory containing
+/// `sitecustomize.py` goes on `PYTHONPATH`, and Python imports it before the program
+/// runs. Asking Python where its own package lives is more reliable than guessing.
+fn auto_capture_env() -> Result<Vec<(String, String)>> {
+    let output = std::process::Command::new("python3")
+        .args([
+            "-c",
+            "import os, noidroid._bootstrap as b; print(os.path.dirname(b.__file__))",
+        ])
+        .output()
+        .map_err(|e| Error::Refused(format!("could not run python3 for --auto: {e}")))?;
+    if !output.status.success() {
+        return Err(Error::Refused(
+            "--auto needs the noidroid Python client importable:\n               pip install -e clients/python   (or: export PYTHONPATH=$PWD/clients/python)"
+                .into(),
+        ));
+    }
+    let dir = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if dir.is_empty() {
+        return Err(Error::Refused(
+            "could not locate the noidroid bootstrap".into(),
+        ));
+    }
+    let existing = std::env::var("PYTHONPATH").unwrap_or_default();
+    let joined = if existing.is_empty() {
+        dir
+    } else {
+        format!("{dir}:{existing}")
+    };
+    Ok(vec![("PYTHONPATH".to_string(), joined)])
+}
+
 fn cmd_run(
     repo: &Repo,
     cwd: &Path,
     name: Option<String>,
+    auto: bool,
     command: Vec<String>,
 ) -> Result<ExitCode> {
     let name = name.unwrap_or_else(|| repo.next_name("run"));
@@ -180,7 +223,12 @@ fn cmd_run(
         command,
         launch_dir: cwd.to_path_buf(),
         name: Some(name.clone()),
-        env: Vec::new(),
+        env: if auto {
+            auto_capture_env()?
+        } else {
+            Vec::new()
+        },
+        auto,
     };
     let report = engine::run(repo, &spec, Mode::Record, None)?;
     print_child_output(&report);
@@ -324,7 +372,12 @@ fn cmd_replay(repo: &Repo, cwd: &Path, name: &str) -> Result<ExitCode> {
         command: t.command.clone(),
         launch_dir: cwd.to_path_buf(),
         name: None,
-        env: Vec::new(),
+        env: if t.auto {
+            auto_capture_env()?
+        } else {
+            Vec::new()
+        },
+        auto: t.auto,
     };
     let report = engine::run(repo, &spec, Mode::Replay, Some(&t))?;
     println!("{} {}", shell("REPLAY"), name);
@@ -428,7 +481,12 @@ fn cmd_branch(
         command: parent.command.clone(),
         launch_dir: cwd.to_path_buf(),
         name: Some(label.clone()),
-        env: Vec::new(),
+        env: if parent.auto {
+            auto_capture_env()?
+        } else {
+            Vec::new()
+        },
+        auto: parent.auto,
     };
     let report = engine::run(
         repo,

@@ -245,6 +245,44 @@ noidroid diff run-1 alt-1
 
 ## Integrating your own program
 
+**Zero code to record and replay. Two lines to branch.**
+
+```bash
+pip install -e clients/python
+noidroid run --auto -- python3 your_agent.py
+```
+
+`--auto` puts a `sitecustomize.py` on the child's `PYTHONPATH` — the same mechanism
+`opentelemetry-instrument` and `ddtrace-run` use — and patches the OpenAI and
+Anthropic base clients at `request`, below the retry loop, so a call that retried
+three times is recorded once. Your program does not mention Paranoid Android at all:
+
+```python
+import anthropic                                   # no noidroid import
+
+client = anthropic.Anthropic()
+reply = client.messages.create(model=…, messages=…)
+print(reply.content[0].text)                       # a real Message, replayed
+```
+
+Record it once, then replay it with the network unplugged: the recorded response is
+served back and the SDK's own type is rebuilt, so `reply.content[0].text` still works.
+
+What automatic capture **cannot** do is branch. No amount of patching can infer that a
+value was a *choice among alternatives*, and that is what an intervention needs — so
+`decide()` stays explicit, and it is the only thing that does:
+
+```python
+pick = nd.decide("route", options=candidates, choice=candidates[0])
+```
+
+It also does not capture async clients, streaming responses, non-SDK HTTP, the clock,
+or randomness. `--auto` prints what it hooked; anything not listed was not recorded.
+Say it plainly, because a replay tool that quietly misses an effect produces a
+trajectory that looks real.
+
+## Integrating it by hand
+
 Three declarations. Everything else is your code, unchanged.
 
 ```python
