@@ -169,6 +169,40 @@ See [`examples/browser_agent/`](examples/browser_agent/README.md). The adapter n
 
 ---
 
+## Which step actually caused it
+
+A trace tells you what happened. It cannot tell you which step *caused* it, because
+that is a question about a world that did not occur — and judging it from the
+transcript is close to guessing: the published baseline for attributing an agent
+failure to a step is around 14% accurate.
+
+A branchable trajectory can settle it by experiment.
+
+```console
+$ noidroid bisect run-1
+BISECT run-1 (ended failure)
+  probing 1 alternative(s) across 1 decision(s)
+
+  @2 tool_choice_1 = "lookup_charges"   success  ← flips it
+
+  earliest flip: run-1@2, choosing "lookup_charges" for tool_choice_1
+    noidroid diff run-1 run-1~2~lookup_charges
+  everything after this step is downstream of a choice already made
+```
+
+Every recorded decision is re-run from its own checkpoint with a different choice, and
+the earliest one that changes the outcome is the one worth looking at. In this example
+the decision was the model's choice of tool, which the agent never declared — the model
+adapter did, so this needed no instrumentation at all.
+
+Each probe is a real trajectory you can open, diff and replay. Up to the divergence
+point they cost nothing, because that part is served from the recording.
+
+When nothing flips, it says so and exits non-zero, rather than picking a plausible
+step and calling it the cause.
+
+---
+
 ## Rewinding the files, not the conversation
 
 The most-requested thing on coding-agent trackers is not undoing the chat — it is
@@ -268,6 +302,8 @@ noidroid diff run-1 alt-1
 | `noidroid replay <traj>` | re-derive a trajectory and check it still hashes the same |
 | `noidroid branch <traj>@<step>` | diverge: `--decide`, `--result` or `--fail` |
 | `noidroid checkout <traj>@<step> <dir>` | write out the workspace as it was |
+| `noidroid bisect <traj>` | find which decision, changed, would have flipped the outcome |
+| `noidroid restore <traj>@<step>` | put the files back as they were, keeping a way out |
 | `noidroid tree` · `diff` · `verify` | the branch graph, a comparison, a store integrity check |
 | `noidroid tui` | browse trajectories and explore from a checkpoint, interactively |
 | `noidroid stand` | 「 ゴ ゴ ゴ ゴ 」 |

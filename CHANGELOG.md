@@ -9,6 +9,18 @@ how the package version relates to `STEP_VERSION`, the on-disk object format.
 
 ### Added
 
+- **`noidroid bisect <trajectory>`** — automatic causal attribution. Every recorded
+  decision is re-run from its own checkpoint with a different choice, and the earliest
+  one that changes the outcome is reported. A trace cannot answer which step *caused*
+  a failure, because that is a question about a world that did not happen; the
+  published baseline for judging it from a transcript is around 14% accurate. Each
+  probe is a real trajectory that can be opened, diffed and replayed, and the prefix
+  of each costs nothing because it is served from the recording. When nothing flips it
+  says so and exits non-zero, rather than naming a plausible step and calling it the
+  cause.
+
+### Added
+
 - **`noidroid run --watch <dir>`** records a directory you already have — your actual
   project — instead of a sandbox. It is read, never cleared. Snapshots skip `.git`,
   `node_modules`, `target` and the like, extendable with `.noidroidignore`, because

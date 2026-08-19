@@ -107,6 +107,20 @@ enum Command {
         address: String,
         directory: PathBuf,
     },
+    /// Find which decision, changed, would have flipped the outcome.
+    Bisect {
+        /// The trajectory to explain.
+        trajectory: String,
+        /// The outcome to search for. Defaults to anything other than the original's.
+        #[arg(long)]
+        goal: Option<String>,
+        /// Stop after the first decision that flips it.
+        #[arg(long)]
+        first: bool,
+        /// Stated-simulated value for an irreversible effect, as for `branch`.
+        #[arg(long, value_name = "TARGET=JSON")]
+        simulate: Vec<String>,
+    },
     /// Show the branch graph.
     Tree,
     /// Compare two trajectories.
@@ -195,6 +209,12 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
             );
             Ok(ExitCode::SUCCESS)
         }
+        Command::Bisect {
+            trajectory,
+            goal,
+            first,
+            simulate,
+        } => cmd_bisect(&repo, &cwd, &trajectory, goal, first, simulate),
         Command::Tree => cmd_tree(&repo),
         Command::Diff { a, b } => cmd_diff(&repo, &a, &b),
         Command::Verify => cmd_verify(&repo),
@@ -679,6 +699,202 @@ fn cmd_restore(repo: &Repo, reference: &str, into: Option<PathBuf>) -> Result<Ex
         target.display()
     );
     Ok(ExitCode::SUCCESS)
+}
+
+/// Which decision, taken differently, would have changed how this ended?
+///
+/// A trace tells you what happened; it cannot tell you which step *caused* it,
+/// because that is a question about a world that did not occur. Judging it from the
+/// transcript is what people do today and it is close to guessing — the published
+/// baseline for attributing an agent failure to a step is around 14% accurate.
+///
+/// An immutable, branchable trajectory can answer it by experiment instead: take each
+/// recorded decision, re-run from exactly that checkpoint with a different choice, and
+/// see which one flips the outcome. The earliest such decision is the one worth
+/// looking at, because everything after it is downstream of a choice that was already
+/// wrong.
+///
+/// The cost is one re-execution per alternative. Up to the divergence point that is
+/// served from the recording and free; past it, it is a real run.
+fn cmd_bisect(
+    repo: &Repo,
+    cwd: &Path,
+    name: &str,
+    goal: Option<String>,
+    stop_at_first: bool,
+    simulate: Vec<String>,
+) -> Result<ExitCode> {
+    let parent = repo.load_trajectory(name)?;
+    let chain = repo.chain(&parent)?;
+    let original = parent.outcome.status.clone();
+
+    let mut simulated = BTreeMap::new();
+    for entry in &simulate {
+        let (target, value) = split_kv(entry)?;
+        simulated.insert(target, parse_value(&value));
+    }
+
+    // Every recorded decision that had an alternative to take.
+    let mut probes: Vec<(u64, String, Value)> = Vec::new();
+    for (_, step) in &chain {
+        let Action::Decide {
+            name: decision,
+            options,
+            choice,
+        } = &step.action
+        else {
+            continue;
+        };
+        let Some(items) = options.as_array() else {
+            continue;
+        };
+        for option in items {
+            if option != choice {
+                probes.push((step.index, decision.clone(), option.clone()));
+            }
+        }
+    }
+
+    println!(
+        "{} {} {}",
+        shell("BISECT"),
+        name,
+        dim(&format!("(ended {original})"))
+    );
+    if probes.is_empty() {
+        println!(
+            "  {}",
+            dim("no recorded decision had an alternative — declare choices with                  nd.decide() to make them explorable")
+        );
+        return Ok(ExitCode::SUCCESS);
+    }
+    println!(
+        "  {}",
+        dim(&format!(
+            "probing {} alternative(s) across {} decision(s)",
+            probes.len(),
+            probes
+                .iter()
+                .map(|(i, _, _)| *i)
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+        ))
+    );
+    println!();
+
+    let mut flipped: Option<(u64, String, Value, String)> = None;
+    for (at, decision, option) in probes {
+        let label = format!("{name}~{at}~{}", slug(&option));
+        if repo.has_trajectory(&label) {
+            continue;
+        }
+        let spec = RunSpec {
+            command: parent.command.clone(),
+            launch_dir: cwd.to_path_buf(),
+            name: Some(label.clone()),
+            env: if parent.auto {
+                auto_capture_env()?
+            } else {
+                Vec::new()
+            },
+            auto: parent.auto,
+            watch: None,
+        };
+        let report = engine::run(
+            repo,
+            &spec,
+            Mode::Branch {
+                at,
+                intervention: Intervention::ReplaceDecision {
+                    name: decision.clone(),
+                    value: option.clone(),
+                },
+                simulate: simulated.clone(),
+            },
+            Some(&parent),
+        )?;
+
+        let outcome = match &report.trajectory {
+            Some(branch) => branch.outcome.status.clone(),
+            None => "unreachable".to_string(),
+        };
+        let flips = match &goal {
+            Some(wanted) => &outcome == wanted,
+            None => outcome != original && outcome != "unreachable",
+        };
+        println!(
+            "  @{at} {} = {:<18} {}{}",
+            dim(&decision),
+            noidroid_core::model::compact_value(&option),
+            status_text(&outcome),
+            if flips {
+                format!("  {}", ok("← flips it"))
+            } else {
+                String::new()
+            }
+        );
+        // `is_none_or` would read better but is newer than our stated MSRV.
+        let earlier = match &flipped {
+            Some((seen, ..)) => at < *seen,
+            None => true,
+        };
+        if flips && earlier {
+            flipped = Some((at, decision.clone(), option.clone(), label.clone()));
+        }
+        if flips && stop_at_first {
+            break;
+        }
+    }
+
+    match flipped {
+        Some((at, decision, option, label)) => {
+            println!();
+            println!(
+                "  {} {}@{at}, choosing {} for {}",
+                shell("earliest flip:"),
+                name,
+                noidroid_core::model::compact_value(&option),
+                decision
+            );
+            println!("    noidroid diff {name} {label}");
+            println!(
+                "  {}",
+                dim("everything after this step is downstream of a choice already made")
+            );
+            Ok(ExitCode::SUCCESS)
+        }
+        None => {
+            println!();
+            println!(
+                "  {}",
+                warn("no single decision changed the outcome on its own")
+            );
+            println!(
+                "  {}",
+                dim("the cause is earlier than any declared decision, outside them, or                      needs more than one changed at once")
+            );
+            Ok(ExitCode::from(1))
+        }
+    }
+}
+
+/// A filesystem- and eye-friendly name for a chosen value.
+fn slug(value: &Value) -> String {
+    let raw = match value {
+        Value::String(s) => s.clone(),
+        other => other.to_string(),
+    };
+    let cleaned: String = raw
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    cleaned.trim_matches('-').chars().take(24).collect()
 }
 
 fn cmd_tree(repo: &Repo) -> Result<ExitCode> {
