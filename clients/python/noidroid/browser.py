@@ -16,6 +16,12 @@ mediated through Paranoid Android and become branchable steps. HTTP *responses* 
 alongside them and replayed into the browser, which is what makes re-driving
 deterministic.
 
+The page itself is declared to the core as a **world** with a `witnessed` grip: a
+fingerprint we can compare and can never put back. That is not decoration. It is what
+makes `noidroid show` say `evidence: witnessed` at a browser checkpoint instead of
+implying the byte-level proof it has over the workspace, and what makes the core refuse
+to re-enter a checkpoint sitting after an irreversible browser action.
+
 Three things follow, and they are the honest boundaries of this adapter:
 
 1. The browser is launched lazily -- only when the engine actually says `execute`.
@@ -176,11 +182,37 @@ class Browser:
             observation["reconstruction"] = self._reconstruction
             self._reconstruction = None
         self._append_action(target, args, observation)
+        self._report_world(observation)
         if self._ungrounded:
             # The browser was never put back into the recorded state, so nothing it
             # tells us from here on is evidence about the original execution.
             return Ungrounded(observation)
         return observation
+
+    def _report_world(self, observation: dict) -> None:
+        """Tell the core what the page looks like now.
+
+        The page is a *world* in the sense of ``docs/environment-model.md`` §4.2: state
+        that persists between steps and that no recorded return value carries forward.
+        Declaring it is what makes the core mark these steps `witnessed` -- reachable by
+        re-driving, checkable by fingerprint, and never restorable -- instead of
+        implying the `captured` grip it has over the workspace.
+
+        What goes in the fingerprint is a judgement call, and the rule is *report what
+        must be true for a reconstruction to count, not everything that is true*. The
+        URL, the title and the page digest are what this adapter already compares when
+        it re-drives a prefix, so they are what it reports. Adding a timestamp would be
+        just as accurate and would make every reconstruction diverge.
+        """
+        self._nd.observe(
+            "browser",
+            {
+                "url": observation["url"],
+                "title": observation["title"],
+                "digest": observation["digest"],
+            },
+            restorable=False,
+        )
 
     def _reconstruction_note(self) -> str:
         if self._reconstruction is None:
