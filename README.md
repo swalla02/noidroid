@@ -585,7 +585,8 @@ The end-to-end tests drive a real Python child process through the real protocol
 because the claims worth testing — *a replay cannot touch the world*, *a branch cannot
 mutate its parent* — are claims about what happens between processes.
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the branch and release workflow, and for the
+[docs/direction.md](docs/direction.md) says where this is going and which decisions
+are settled. See [CONTRIBUTING.md](CONTRIBUTING.md) for the branch and release workflow, and for the
 rules about `STEP_VERSION` — the on-disk object format is a compatibility surface,
 because an object's name *is* the hash of its bytes.
 
