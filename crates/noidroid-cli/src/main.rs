@@ -9,6 +9,7 @@ use clap::{Parser, Subcommand};
 use serde_json::Value;
 
 use noidroid_core::bundle;
+use noidroid_core::checkpoint;
 use noidroid_core::engine::{self, Mode, Report, RunSpec};
 use noidroid_core::model::{Action, Failure, Intervention, Provenance, Step, Trajectory};
 use noidroid_core::repo::{self, Repo};
@@ -471,10 +472,62 @@ fn cmd_show(repo: &Repo, reference: &str) -> Result<ExitCode> {
         "  {:<12} {} file(s) {}",
         dim("state"),
         workspace.entries.len(),
-        dim(&format!("root {}", step.state_root.short()))
+        dim(&format!(
+            "root {} · {}",
+            step.state_root.short(),
+            step.grip.label()
+        ))
     );
     for entry in workspace.entries.iter().take(8) {
         println!("               {} {}", dim("·"), entry.path);
+    }
+
+    // Three independent questions, and none of them collapses into another: can I get
+    // back here, will I know if I got it wrong, and is what I get back to a claim
+    // about reality. See docs/environment-model.md §6.
+    let point = checkpoint::at(&chain, index).expect("the step was just read");
+    println!("\n  {}", shell("WHAT THIS CHECKPOINT GUARANTEES"));
+    println!(
+        "    {:<12} {} {}",
+        dim("reach"),
+        if point.reach.is_reachable() {
+            ok(point.reach.label())
+        } else {
+            bad(point.reach.label())
+        },
+        dim(match point.reach {
+            checkpoint::Reach::Rebuild =>
+                "re-execute the prefix; every input comes from the recording",
+            checkpoint::Reach::RebuildAndRestore =>
+                "re-execute the prefix, restoring around effects we will not re-perform",
+            checkpoint::Reach::Unreachable { .. } => "",
+        })
+        .trim_end()
+    );
+    if let Some(why) = point.reach.why() {
+        for line in why.lines() {
+            println!("                 {}", warn(line.trim()));
+        }
+    }
+    println!(
+        "    {:<12} {} {}",
+        dim("evidence"),
+        point.evidence.label(),
+        dim(point.evidence.evidence())
+    );
+    println!(
+        "    {:<12} {}",
+        dim("grounding"),
+        provenance_text(point.grounding)
+    );
+
+    if !point.reach.is_reachable() {
+        println!("\n  {}", shell("EXPLORE FROM HERE"));
+        println!(
+            "    {}",
+            dim("nothing can be explored from here; pick an earlier step with `noidroid log`")
+        );
+        return Ok(ExitCode::SUCCESS);
     }
 
     println!("\n  {}", shell("EXPLORE FROM HERE"));
@@ -924,7 +977,7 @@ fn cmd_bisect(
             auto: parent.auto,
             watch: None,
         };
-        let report = engine::run(
+        let attempt = engine::run(
             repo,
             &spec,
             Mode::Branch {
@@ -936,16 +989,26 @@ fn cmd_bisect(
                 simulate: simulated.clone(),
             },
             Some(&parent),
-        )?;
+        );
 
-        let outcome = match &report.trajectory {
-            Some(branch) => branch.outcome.status.clone(),
-            None => "unreachable".to_string(),
+        // A probe that could not be re-entered, could not be reconstructed, or died
+        // without reaching a verdict has established *nothing*. Counting it as
+        // "changed the outcome" would be inventing the one answer this command
+        // exists to find, so it reads as `unknown` and never flips.
+        let outcome = match &attempt {
+            Err(Error::Refused(_)) => "unreachable".to_string(),
+            Err(e) => return Err(Error::Protocol(format!("probing {name}@{at}: {e}"))),
+            Ok(report) => match &report.trajectory {
+                Some(branch) => branch.outcome.status.clone(),
+                None => "unreachable".to_string(),
+            },
         };
-        let flips = match &goal {
-            Some(wanted) => &outcome == wanted,
-            None => outcome != original && outcome != "unreachable",
-        };
+        let established = !matches!(outcome.as_str(), "unreachable" | "aborted" | "unknown");
+        let flips = established
+            && match &goal {
+                Some(wanted) => &outcome == wanted,
+                None => outcome != original,
+            };
         println!(
             "  @{at} {} = {:<18} {}{}",
             dim(&decision),
@@ -953,6 +1016,8 @@ fn cmd_bisect(
             status_text(&outcome),
             if flips {
                 format!("  {}", ok("← flips it"))
+            } else if !established {
+                format!("  {}", warn("← unknown, nothing was established"))
             } else {
                 String::new()
             }
@@ -1219,6 +1284,20 @@ fn print_header(t: &Trajectory) {
         status_text(&t.outcome.status),
         origin
     );
+    // What it would take to return to this run: which worlds the program declared it
+    // could see, and how well. Silent for the ordinary case, where the workspace is
+    // the whole of the recorded world.
+    if !t.worlds.is_empty() {
+        println!(
+            "  {} {}",
+            dim("world"),
+            t.worlds
+                .iter()
+                .map(|w| format!("{} ({})", w.name, w.grip.label()))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
 }
 
 fn print_timeline(repo: &Repo, t: &Trajectory) -> Result<()> {
