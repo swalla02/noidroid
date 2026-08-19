@@ -10,7 +10,7 @@ use serde_json::Value;
 
 use noidroid_core::bundle;
 use noidroid_core::engine::{self, Mode, Report, RunSpec};
-use noidroid_core::model::{Action, Intervention, Provenance, Step, Trajectory};
+use noidroid_core::model::{Action, Failure, Intervention, Provenance, Step, Trajectory};
 use noidroid_core::repo::{self, Repo};
 use noidroid_core::{tree, Error, Result};
 
@@ -47,6 +47,10 @@ enum Command {
         /// replays; branching still needs a declared decision.
         #[arg(long)]
         auto: bool,
+        /// Record even though automatic capture reports surfaces it cannot cover.
+        /// Only when you know your program does not use them.
+        #[arg(long)]
+        allow_gaps: bool,
         /// Record this directory instead of a sandbox — your actual project. It is
         /// read, never written; `.noidroidignore` extends the skipped directories.
         #[arg(long, value_name = "DIR")]
@@ -83,6 +87,10 @@ enum Command {
         /// Make the interaction fail: `--fail 'message'`.
         #[arg(long, value_name = "MESSAGE")]
         fail: Option<String>,
+        /// A named way the world fails: timeout, server-error, rate-limited,
+        /// malformed, empty, unauthorized. `--inject all` branches each in turn.
+        #[arg(long, value_name = "KIND")]
+        inject: Option<String>,
         /// Stated-simulated value for an irreversible effect past the divergence
         /// point: `--simulate target='<json>'`. Without one, such calls are denied.
         #[arg(long, value_name = "TARGET=JSON")]
@@ -189,9 +197,10 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
         Command::Run {
             name,
             auto,
+            allow_gaps,
             watch,
             command,
-        } => cmd_run(&repo, &cwd, name, auto, watch, command),
+        } => cmd_run(&repo, &cwd, name, auto, allow_gaps, watch, command),
         Command::Log { trajectory } => cmd_log(&repo, trajectory),
         Command::Show { reference } => cmd_show(&repo, &reference),
         Command::Replay { trajectory } => cmd_replay(&repo, &cwd, &trajectory),
@@ -201,9 +210,10 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
             decide,
             result,
             fail,
+            inject,
             simulate,
         } => cmd_branch(
-            &repo, &cwd, &reference, label, decide, result, fail, simulate,
+            &repo, &cwd, &reference, label, decide, result, fail, inject, simulate,
         ),
         Command::Checkout {
             reference,
@@ -248,6 +258,15 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
 /// The same trick as `opentelemetry-instrument`: a directory containing
 /// `sitecustomize.py` goes on `PYTHONPATH`, and Python imports it before the program
 /// runs. Asking Python where its own package lives is more reliable than guessing.
+/// The same environment, plus the deliberate allowance for surfaces we cannot cover.
+fn auto_capture_env_with(allow_gaps: bool) -> Result<Vec<(String, String)>> {
+    let mut env = auto_capture_env()?;
+    if allow_gaps {
+        env.push(("NOIDROID_ALLOW_GAPS".to_string(), "1".to_string()));
+    }
+    Ok(env)
+}
+
 fn auto_capture_env() -> Result<Vec<(String, String)>> {
     let output = std::process::Command::new("python3")
         .args([
@@ -282,6 +301,7 @@ fn cmd_run(
     cwd: &Path,
     name: Option<String>,
     auto: bool,
+    allow_gaps: bool,
     watch: Option<PathBuf>,
     command: Vec<String>,
 ) -> Result<ExitCode> {
@@ -303,7 +323,7 @@ fn cmd_run(
         launch_dir: cwd.to_path_buf(),
         name: Some(name.clone()),
         env: if auto {
-            auto_capture_env()?
+            auto_capture_env_with(allow_gaps)?
         } else {
             Vec::new()
         },
@@ -453,7 +473,7 @@ fn cmd_replay(repo: &Repo, cwd: &Path, name: &str) -> Result<ExitCode> {
         launch_dir: cwd.to_path_buf(),
         name: None,
         env: if t.auto {
-            auto_capture_env()?
+            auto_capture_env_with(t.allow_gaps)?
         } else {
             Vec::new()
         },
@@ -511,6 +531,7 @@ fn cmd_branch(
     decide: Option<String>,
     result: Option<String>,
     fail: Option<String>,
+    inject: Option<String>,
     simulate: Vec<String>,
 ) -> Result<ExitCode> {
     let (name, index) = repo::parse_ref(reference);
@@ -518,6 +539,27 @@ fn cmd_branch(
         Error::Refused("a branch needs a checkpoint: <trajectory>@<step>".to_string())
     })?;
     let parent = repo.load_trajectory(&name)?;
+
+    // A named failure is just an intervention with the payload written for you —
+    // which is the difference between a thing people do and a thing people mean to.
+    let injected = match &inject {
+        Some(kind) => Some(Failure::parse(kind).ok_or_else(|| {
+            Error::Refused(format!(
+                "unknown failure '{kind}'. Known: {}",
+                Failure::ALL
+                    .iter()
+                    .map(|f| f.label())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ))
+        })?),
+        None => None,
+    };
+    if injected.is_some() && (decide.is_some() || result.is_some() || fail.is_some()) {
+        return Err(Error::Refused(
+            "give exactly one of --decide, --result, --fail, --inject".into(),
+        ));
+    }
 
     let intervention = match (decide, result, fail) {
         (Some(spec), None, None) => {
@@ -532,11 +574,14 @@ fn cmd_branch(
                 .map_err(|e| Error::Refused(format!("--result must be JSON: {e}")))?,
         },
         (None, None, Some(message)) => Intervention::Fail { error: message },
-        (None, None, None) => {
-            return Err(Error::Refused(
-                "a branch needs an intervention: --decide, --result or --fail".into(),
-            ))
-        }
+        (None, None, None) => match injected {
+            Some(failure) => failure.as_intervention(),
+            None => {
+                return Err(Error::Refused(
+                    "a branch needs an intervention: --decide, --result, --fail or --inject".into(),
+                ))
+            }
+        },
         _ => {
             return Err(Error::Refused(
                 "give exactly one of --decide, --result, --fail".into(),
@@ -550,7 +595,10 @@ fn cmd_branch(
         simulated.insert(target, parse_value(&value));
     }
 
-    let label = label.unwrap_or_else(|| repo.next_name("alt"));
+    let label = label.unwrap_or_else(|| match injected {
+        Some(failure) => repo.next_name(&format!("{name}~{}", failure.label())),
+        None => repo.next_name("alt"),
+    });
     if repo.has_trajectory(&label) {
         return Err(Error::Refused(format!(
             "trajectory '{label}' already exists"
@@ -563,7 +611,7 @@ fn cmd_branch(
         launch_dir: cwd.to_path_buf(),
         name: Some(label.clone()),
         env: if parent.auto {
-            auto_capture_env()?
+            auto_capture_env_with(parent.allow_gaps)?
         } else {
             Vec::new()
         },
@@ -610,6 +658,14 @@ fn cmd_branch(
         at
     );
     println!("  {:<12} {}", dim("intervention"), intervention.summary());
+    if let Some(failure) = injected {
+        println!(
+            "  {:<12} {} {}",
+            dim("failure"),
+            warn(failure.label()),
+            dim(failure.describes())
+        );
+    }
     print_shared_prefix(repo, &parent, &branch, at)?;
     println!();
     print_timeline(repo, &branch)?;

@@ -7,6 +7,28 @@ how the package version relates to `STEP_VERSION`, the on-disk object format.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Automatic capture failed open, and said it did not.** The README promised
+  "`--auto` prints what it hooked; anything not listed was not recorded" — but the
+  print was gated behind an environment variable nothing in the project ever set, so
+  the single documented mitigation for fail-open capture never ran. It always prints
+  now.
+- **The async surface was never patched and never mentioned.** A program using
+  `AsyncAnthropic` had its sync calls recorded and its async calls run **live during
+  replay**, while the replay reported itself faithful. `--auto` now names every
+  surface it could not cover and **refuses to record**, with `--allow-gaps` as a
+  deliberate override that is stored on the trajectory so replays make the same
+  allowance.
+- `auto.install()` silently continued when an SDK's base client was not where it
+  expected, contradicting its own docstring; it raises now, because an upstream
+  rename that records nothing and exits zero is the failure this module exists to
+  prevent.
+- `Step.v` was written but never checked on read, so a future format version would
+  have produced bogus divergences rather than an honest refusal.
+- `_PassThrough.call` did not accept `volatile=`, so a program using it raised
+  `TypeError` when run *without* noidroid — defeating the point of the pass-through.
+
 ## [0.2.0] - 2026-08-19
 
 ### Fixed

@@ -397,9 +397,24 @@ pick = nd.decide("route", options=candidates, choice=candidates[0])
 ```
 
 It also does not capture async clients, streaming responses, non-SDK HTTP, the clock,
-or randomness. `--auto` prints what it hooked; anything not listed was not recorded.
-Say it plainly, because a replay tool that quietly misses an effect produces a
-trajectory that looks real.
+or randomness — and it will not quietly record around them. `--auto` prints what it
+hooked *and* what it could not, and **refuses to record** when it finds a surface it
+cannot cover:
+
+```console
+$ noidroid run --auto -- python3 agent.py
+[noidroid.auto] hooked: anthropic._base_client.SyncAPIClient.request
+[noidroid.auto] NOT hooked: anthropic._base_client.AsyncAPIClient.request — calls
+                through it are not recorded
+[noidroid.auto] refusing to record: the surfaces above are not captured, so this
+                recording would be incomplete without saying so.
+  Record it anyway with --allow-gaps if you know your program does not use them.
+```
+
+`--allow-gaps` is the way past it, and the allowance is stored on the trajectory so
+replaying it makes the same one. Refusing costs you a run; recording anyway costs the
+trust in every run, because a trajectory that missed the model calls still looks real
+and still claims to replay faithfully.
 
 ## Integrating it by hand
 

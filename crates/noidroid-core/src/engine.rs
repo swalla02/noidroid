@@ -248,6 +248,17 @@ pub fn run(repo: &Repo, spec: &RunSpec, mode: Mode, source: Option<&Trajectory>)
                 }
             }
         }
+        None if tail_of(&stderr_path).contains("refusing to record") => {
+            // Not a wiring problem: automatic capture found a hole and declined. The
+            // bootstrap already explained itself, so repeating a guess about
+            // PYTHONPATH would only bury it.
+            Err(Error::Refused(
+                tail_of(&stderr_path)
+                    .replace("It said:", "")
+                    .trim()
+                    .to_string(),
+            ))
+        }
         None => Err(Error::Protocol(format!(
             "the process exited without connecting to Paranoid Android.\n  The program must call the client (Python: `noidroid.connect()`), and that client\n  must be importable -- try: export PYTHONPATH=$PWD/clients/python{}",
             tail_of(&stderr_path)
@@ -325,6 +336,10 @@ pub fn run(repo: &Repo, spec: &RunSpec, mode: Mode, source: Option<&Trajectory>)
                 _ => Vec::new(),
             },
             auto: spec.auto,
+            allow_gaps: spec
+                .env
+                .iter()
+                .any(|(k, v)| k == "NOIDROID_ALLOW_GAPS" && v == "1"),
             watched: if watching { spec.watch.clone() } else { None },
         };
         repo.save_trajectory(&trajectory)?;
