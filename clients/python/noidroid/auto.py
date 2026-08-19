@@ -42,11 +42,23 @@ PROVIDERS = ("openai", "anthropic")
 
 _session = None
 _hooked: list[str] = []
+_unhooked: list[str] = []
 
 
 def hooked() -> list[str]:
     """What was successfully patched, in the order it was patched."""
     return list(_hooked)
+
+
+def unhooked() -> list[str]:
+    """Surfaces that are present and NOT captured.
+
+    This list is the important one. Every auto-instrumentation mechanism fails open,
+    and a missed call in an observability tool is a gap while a missed call here is a
+    trajectory that looks real. So what is *not* covered is reported as loudly as what
+    is, and `noidroid run --auto` refuses rather than recording half a program.
+    """
+    return list(_unhooked)
 
 
 def _shared_session():
@@ -151,9 +163,22 @@ def install(providers: Optional[tuple] = None) -> list[str]:
             continue
         client_cls = getattr(base, "SyncAPIClient", None)
         if client_cls is None:
-            continue
-        if getattr(client_cls.request, "__noidroid_wrapped__", False):
-            continue
-        _wrap_request(client_cls, provider)
-        _hooked.append(f"{provider}._base_client.SyncAPIClient.request")
+            # The docstring promises this raises. A rename upstream that silently
+            # recorded nothing and exited zero is exactly the failure this module
+            # exists to prevent.
+            raise RuntimeError(
+                f"{provider} is installed but its base client is not where this build "
+                f"expects it ({provider}._base_client.SyncAPIClient). Nothing would be "
+                f"recorded, so nothing is."
+            )
+        if not getattr(client_cls.request, "__noidroid_wrapped__", False):
+            _wrap_request(client_cls, provider)
+            _hooked.append(f"{provider}._base_client.SyncAPIClient.request")
+
+        # The async surface is a real hole and is reported as one. Mediation is a
+        # blocking request/response over one socket, so wrapping an async client
+        # would stall the loop it is running on — refusing is honest, half-covering
+        # it is not.
+        if getattr(base, "AsyncAPIClient", None) is not None:
+            _unhooked.append(f"{provider}._base_client.AsyncAPIClient.request")
     return hooked()

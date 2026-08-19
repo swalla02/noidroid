@@ -280,7 +280,7 @@ class _PassThrough:
     def __init__(self) -> None:
         self.workspace = os.getcwd()
 
-    def call(self, target, run, args=None, effect=READ):  # noqa: D102
+    def call(self, target, run, args=None, effect=READ, volatile=None):  # noqa: D102
         return run()
 
     def decide(self, name, options, choice):  # noqa: D102
