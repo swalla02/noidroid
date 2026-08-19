@@ -114,6 +114,7 @@ impl Fixture {
             name: name.map(|n| n.to_string()),
             env: self.env(extra),
             auto: false,
+            watch: None,
         }
     }
 

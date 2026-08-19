@@ -46,6 +46,10 @@ enum Command {
         /// replays; branching still needs a declared decision.
         #[arg(long)]
         auto: bool,
+        /// Record this directory instead of a sandbox — your actual project. It is
+        /// read, never written; `.noidroidignore` extends the skipped directories.
+        #[arg(long, value_name = "DIR")]
+        watch: Option<PathBuf>,
         /// The command to run, after `--`.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
         command: Vec<String>,
@@ -83,10 +87,24 @@ enum Command {
         #[arg(long, value_name = "TARGET=JSON")]
         simulate: Vec<String>,
     },
+    /// Put the files back as they were at a checkpoint, saving the current ones first.
+    Restore {
+        /// `<trajectory>@<step>`.
+        reference: String,
+        /// Where to restore. Defaults to the directory that was recorded.
+        #[arg(long, value_name = "DIR")]
+        into: Option<PathBuf>,
+    },
     /// Write the workspace as it was at a checkpoint into a directory.
     Checkout {
         /// `<trajectory>@<step>`.
         reference: String,
+        directory: PathBuf,
+    },
+    /// Write out any recorded directory by its address. The way back from `restore`.
+    CheckoutTree {
+        /// A tree address, as printed by `restore` or `show`.
+        address: String,
         directory: PathBuf,
     },
     /// Show the branch graph.
@@ -142,8 +160,9 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
         Command::Run {
             name,
             auto,
+            watch,
             command,
-        } => cmd_run(&repo, &cwd, name, auto, command),
+        } => cmd_run(&repo, &cwd, name, auto, watch, command),
         Command::Log { trajectory } => cmd_log(&repo, trajectory),
         Command::Show { reference } => cmd_show(&repo, &reference),
         Command::Replay { trajectory } => cmd_replay(&repo, &cwd, &trajectory),
@@ -161,6 +180,21 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
             reference,
             directory,
         } => cmd_checkout(&repo, &reference, &directory),
+        Command::Restore { reference, into } => cmd_restore(&repo, &reference, into),
+        Command::CheckoutTree { address, directory } => {
+            let digest = noidroid_core::Digest::from_hex(address);
+            let t = tree::read(&digest, &repo.store)?;
+            // Same rule as `restore`: what was never recorded is never removed.
+            let ignores = tree::Ignores::for_directory(&directory);
+            tree::materialize_with(&digest, &repo.store, &directory, &ignores)?;
+            println!(
+                "{} {} file(s) into {}",
+                shell("restored"),
+                t.entries.len(),
+                directory.display()
+            );
+            Ok(ExitCode::SUCCESS)
+        }
         Command::Tree => cmd_tree(&repo),
         Command::Diff { a, b } => cmd_diff(&repo, &a, &b),
         Command::Verify => cmd_verify(&repo),
@@ -211,6 +245,7 @@ fn cmd_run(
     cwd: &Path,
     name: Option<String>,
     auto: bool,
+    watch: Option<PathBuf>,
     command: Vec<String>,
 ) -> Result<ExitCode> {
     let name = name.unwrap_or_else(|| repo.next_name("run"));
@@ -219,6 +254,13 @@ fn cmd_run(
             "trajectory '{name}' already exists; history is append-only"
         )));
     }
+    let watch = match watch {
+        Some(dir) => Some(
+            dir.canonicalize()
+                .map_err(|e| Error::Refused(format!("--watch {}: {e}", dir.display())))?,
+        ),
+        None => None,
+    };
     let spec = RunSpec {
         command,
         launch_dir: cwd.to_path_buf(),
@@ -228,6 +270,7 @@ fn cmd_run(
         } else {
             Vec::new()
         },
+        watch,
         auto,
     };
     let report = engine::run(repo, &spec, Mode::Record, None)?;
@@ -378,6 +421,7 @@ fn cmd_replay(repo: &Repo, cwd: &Path, name: &str) -> Result<ExitCode> {
             Vec::new()
         },
         auto: t.auto,
+        watch: None,
     };
     let report = engine::run(repo, &spec, Mode::Replay, Some(&t))?;
     println!("{} {}", shell("REPLAY"), name);
@@ -487,6 +531,7 @@ fn cmd_branch(
             Vec::new()
         },
         auto: parent.auto,
+        watch: None,
     };
     let report = engine::run(
         repo,
@@ -569,6 +614,69 @@ fn cmd_checkout(repo: &Repo, reference: &str, directory: &Path) -> Result<ExitCo
     println!(
         "  {}",
         dim("this is the recorded workspace, not a restored process")
+    );
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Put a checkpoint's files back, keeping a way out.
+///
+/// This is the one command that writes into a directory somebody is working in, so
+/// it snapshots what is there first and prints the address. Nothing is destroyed —
+/// the previous contents are in the store, addressed by content, and `checkout` will
+/// bring them back.
+fn cmd_restore(repo: &Repo, reference: &str, into: Option<PathBuf>) -> Result<ExitCode> {
+    let (name, index) = repo::parse_ref(reference);
+    let t = repo.load_trajectory(&name)?;
+    let chain = repo.chain(&t)?;
+    let index = index.unwrap_or(chain.len() as u64 - 1);
+    let (_, step) = chain
+        .get(index as usize)
+        .ok_or_else(|| Error::NotFound(format!("{name} has no step {index}")))?;
+
+    let target = match into.or_else(|| t.watched.clone()) {
+        Some(dir) => dir,
+        None => {
+            return Err(Error::Refused(format!(
+                "{name} was recorded in a sandbox, so there is nowhere obvious to put                  it back.\n  Give a directory: noidroid restore {reference} --into <dir>"
+            )))
+        }
+    };
+    if !target.is_dir() {
+        return Err(Error::NotFound(format!("{}", target.display())));
+    }
+
+    let ignores = tree::Ignores::for_directory(&target);
+    let before = tree::snapshot_with(&target, &repo.store, &ignores)?;
+    let recorded = tree::read(&step.state_root, &repo.store)?;
+    let current = tree::read(&before, &repo.store)?;
+    let changes = tree::diff(&current, &recorded);
+
+    tree::materialize_with(&step.state_root, &repo.store, &target, &ignores)?;
+
+    println!(
+        "{} {} to {name}@{index}",
+        shell("restored"),
+        target.display()
+    );
+    for (path, change) in changes.iter().take(12) {
+        let mark = match change {
+            tree::Change::Added => "+",
+            tree::Change::Removed => "-",
+            tree::Change::Modified => "~",
+        };
+        println!("  {mark} {path}");
+    }
+    if changes.len() > 12 {
+        println!("  {}", dim(&format!("… and {} more", changes.len() - 12)));
+    }
+    if changes.is_empty() {
+        println!("  {}", dim("already identical"));
+    }
+    println!(
+        "\n  {}\n    noidroid checkout-tree {} {}",
+        dim("the files that were here are saved; to put them back:"),
+        before,
+        target.display()
     );
     Ok(ExitCode::SUCCESS)
 }

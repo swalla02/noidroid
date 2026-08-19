@@ -15,17 +15,94 @@ use crate::hash::Digest;
 use crate::model::{Tree, TreeEntry};
 use crate::store::Store;
 
+/// Directories never worth hashing: derived, enormous, or ours.
+///
+/// Snapshotting a real project after every step is only affordable if the parts that
+/// dwarf the source are skipped. These are the defaults; a `.noidroidignore` file of
+/// newline-separated names extends them.
+pub const DEFAULT_IGNORES: &[&str] = &[
+    ".noidroid",
+    ".git",
+    ".hg",
+    ".svn",
+    "node_modules",
+    "target",
+    "__pycache__",
+    ".venv",
+    "venv",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    "dist",
+    "build",
+    ".next",
+    ".cache",
+];
+
+/// What to leave out of a snapshot.
+#[derive(Clone, Debug)]
+pub struct Ignores {
+    names: BTreeSet<String>,
+}
+
+impl Default for Ignores {
+    fn default() -> Self {
+        Ignores {
+            names: DEFAULT_IGNORES.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+}
+
+impl Ignores {
+    /// Nothing ignored. What a sandboxed workspace wants: it holds only what the run
+    /// put there, so skipping anything would lose recorded state.
+    pub fn none() -> Ignores {
+        Ignores {
+            names: BTreeSet::new(),
+        }
+    }
+
+    /// Defaults plus whatever `.noidroidignore` in `dir` lists, one name per line.
+    pub fn for_directory(dir: &Path) -> Ignores {
+        let mut ignores = Ignores::default();
+        if let Ok(text) = fs::read_to_string(dir.join(".noidroidignore")) {
+            for line in text.lines() {
+                let name = line.trim();
+                if !name.is_empty() && !name.starts_with('#') {
+                    ignores.names.insert(name.trim_matches('/').to_string());
+                }
+            }
+        }
+        ignores
+    }
+
+    fn skips(&self, name: &str) -> bool {
+        self.names.contains(name)
+    }
+}
+
 /// Hash a directory into the store, returning the tree address.
 ///
 /// Symlinks and special files are skipped: we would not be able to restore them
 /// faithfully, and silently hashing their targets would be a lie about coverage.
 pub fn snapshot(dir: &Path, store: &Store) -> Result<Digest> {
+    snapshot_with(dir, store, &Ignores::none())
+}
+
+/// Hash a directory, leaving out what `ignores` names.
+pub fn snapshot_with(dir: &Path, store: &Store, ignores: &Ignores) -> Result<Digest> {
     let mut entries = Vec::new();
-    collect(dir, dir, store, &mut entries)?;
+    collect(dir, dir, store, ignores, &mut entries)?;
     store.put_json(&Tree::new(entries))
 }
 
-fn collect(root: &Path, dir: &Path, store: &Store, out: &mut Vec<TreeEntry>) -> Result<()> {
+fn collect(
+    root: &Path,
+    dir: &Path,
+    store: &Store,
+    ignores: &Ignores,
+    out: &mut Vec<TreeEntry>,
+) -> Result<()> {
     if !dir.exists() {
         return Ok(());
     }
@@ -38,8 +115,15 @@ fn collect(root: &Path, dir: &Path, store: &Store, out: &mut Vec<TreeEntry>) -> 
         if meta.file_type().is_symlink() {
             continue;
         }
+        if path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| ignores.skips(n))
+        {
+            continue;
+        }
         if meta.is_dir() {
-            collect(root, &path, store, out)?;
+            collect(root, &path, store, ignores, out)?;
         } else if meta.is_file() {
             let rel = path
                 .strip_prefix(root)
@@ -66,11 +150,27 @@ fn collect(root: &Path, dir: &Path, store: &Store, out: &mut Vec<TreeEntry>) -> 
 /// deleted inode, and every relative path it touched afterwards would silently land
 /// in a directory nobody can see.
 pub fn materialize(digest: &Digest, store: &Store, dir: &Path) -> Result<()> {
+    materialize_with(digest, store, dir, &Ignores::none())
+}
+
+/// Write a recorded tree into a directory, leaving anything `ignores` names alone.
+///
+/// This matters more than it sounds. Restoring into somebody's project means pruning
+/// what the recording does not contain — and the recording deliberately never
+/// contained `.git`, `node_modules`, or our own `.noidroid`. Pruning without the same
+/// list deletes the repository, the dependencies, and the trajectory being restored
+/// from, in that order.
+pub fn materialize_with(
+    digest: &Digest,
+    store: &Store,
+    dir: &Path,
+    ignores: &Ignores,
+) -> Result<()> {
     let tree: Tree = store.get_json(digest)?;
     fs::create_dir_all(dir)?;
 
     let wanted: BTreeSet<PathBuf> = tree.entries.iter().map(|e| dir.join(&e.path)).collect();
-    prune(dir, &wanted)?;
+    prune(dir, &wanted, ignores)?;
 
     for entry in &tree.entries {
         let path = dir.join(&entry.path);
@@ -85,13 +185,22 @@ pub fn materialize(digest: &Digest, store: &Store, dir: &Path) -> Result<()> {
 
 /// Remove everything under `dir` that the tree does not contain, leaving `dir` itself
 /// in place. Returns whether the directory ended up empty.
-fn prune(dir: &Path, wanted: &BTreeSet<PathBuf>) -> Result<bool> {
+fn prune(dir: &Path, wanted: &BTreeSet<PathBuf>, ignores: &Ignores) -> Result<bool> {
     let mut empty = true;
     for entry in fs::read_dir(dir)? {
         let path = entry?.path();
+        if path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| ignores.skips(n))
+        {
+            // Never recorded, so never removed.
+            empty = false;
+            continue;
+        }
         let meta = fs::symlink_metadata(&path)?;
         if meta.is_dir() && !meta.file_type().is_symlink() {
-            if prune(&path, wanted)? {
+            if prune(&path, wanted, ignores)? {
                 fs::remove_dir(&path)?;
             } else {
                 empty = false;

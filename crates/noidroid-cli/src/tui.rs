@@ -224,6 +224,7 @@ impl<'a> App<'a> {
             name: Some(label.clone()),
             env: Vec::new(),
             auto: false,
+            watch: None,
         };
         let outcome = engine::run(
             self.repo,
@@ -274,6 +275,7 @@ impl<'a> App<'a> {
             name: None,
             env: Vec::new(),
             auto: false,
+            watch: None,
         };
         match engine::run(self.repo, &spec, Mode::Replay, Some(&t)) {
             Ok(report) if report.faithful() => {

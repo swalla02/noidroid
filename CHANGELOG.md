@@ -9,6 +9,28 @@ how the package version relates to `STEP_VERSION`, the on-disk object format.
 
 ### Added
 
+- **`noidroid run --watch <dir>`** records a directory you already have — your actual
+  project — instead of a sandbox. It is read, never cleared. Snapshots skip `.git`,
+  `node_modules`, `target` and the like, extendable with `.noidroidignore`, because
+  hashing a real repository after every step is otherwise unaffordable.
+- **`noidroid restore <traj>@<step>`** puts the files back as they were at a
+  checkpoint. It snapshots what is currently there first and prints its address, so
+  **`noidroid checkout-tree <address> <dir>`** is the way back. This is the most
+  requested capability on coding-agent issue trackers by an order of magnitude, and it
+  is about files rather than conversation.
+- Reconstruction never touches a watched directory: replays and branches re-execute
+  the program, which writes files, so they always get their own copy.
+
+### Fixed
+
+- `materialize` pruned anything the recorded tree did not contain, without consulting
+  the ignore list that had kept it *out* of the recording. Restoring into a real
+  project would have deleted `.git`, `node_modules`, and the `.noidroid` directory
+  holding the trajectory being restored from — in that order. Found by running it, not
+  by reading it.
+
+### Added
+
 - **`noidroid run --auto`: zero-code recording.** A `sitecustomize.py` goes on the
   child's `PYTHONPATH` — the mechanism `opentelemetry-instrument` and `ddtrace-run`
   use — and patches the OpenAI and Anthropic base clients at `request`, below the

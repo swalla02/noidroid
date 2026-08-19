@@ -343,6 +343,10 @@ pub struct Trajectory {
     /// Recorded with automatic capture, so reconstructing it needs the same hooks.
     #[serde(default)]
     pub auto: bool,
+    /// The directory this run was recorded in, when it was the caller's own rather
+    /// than a sandbox. It is where `restore` puts the files back by default.
+    #[serde(default)]
+    pub watched: Option<std::path::PathBuf>,
 }
 
 /// Per-run, non-content observations: how each step was delivered and how long it took.
