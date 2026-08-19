@@ -10,6 +10,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::env::Grip;
 use crate::hash::Digest;
 
 pub const STEP_VERSION: u32 = 1;
@@ -96,15 +97,24 @@ impl Delivery {
 
 /// What re-performing an interaction would do to the world. Declared by the caller;
 /// it is the only thing that lets us fail safely around external side effects.
+///
+/// The axis is **reversibility under reconstruction**, not whether something touches a
+/// disk. That distinction is the one adapter authors get wrong: a browser navigation is
+/// a `Write` because re-driving the recorded actions rebuilds the page, while a robot's
+/// actuator command is `Irreversible` because nothing rebuilds the world.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum EffectKind {
     /// Observes; repeating it changes nothing.
     Read,
-    /// Mutates the sandboxed workspace; reversible because the sandbox is ours.
+    /// Mutates a world we can put back — the sandboxed workspace, or an environment
+    /// that re-driving rebuilds. Not re-performed during a reconstruction: the
+    /// recorded state is restored instead, or the environment re-drives itself.
     Write,
-    /// Leaves the sandbox: payments, mail, production writes, physical actuation.
-    /// Never performed during replay, denied by default during branching.
+    /// Leaves a mark we cannot take back: payments, mail, production writes, physical
+    /// actuation. Never performed during replay, denied by default during branching,
+    /// and — in a world we only witness — enough to make every later checkpoint
+    /// unreachable. See [`crate::checkpoint::Reach`].
     Irreversible,
 }
 
@@ -334,11 +344,22 @@ pub struct Step {
     pub index: u64,
     pub action: Action,
     pub effects: Vec<Effect>,
-    /// Merkle root of the sandboxed workspace after this step.
+    /// Address of the situation after this step: the workspace, plus whatever world
+    /// the program declared it can see. See [`crate::env`].
     pub state_root: Digest,
     /// Join of this step's own grounding with its parent's and its effects'.
     pub provenance: Provenance,
     pub intervention: Option<Intervention>,
+    /// What `state_root` is *worth*: bytes we hold, a fingerprint we can only
+    /// compare, or nothing.
+    ///
+    /// Skipped when it is `captured`, which is what every recording made before the
+    /// environment model existed was. That is what keeps `STEP_VERSION` at 1: an old
+    /// step reads back as captured, which is exactly what it was, and a new
+    /// workspace-only step serialises to the same bytes and the same address as
+    /// before. Only a step with a declared, non-restorable world carries the field.
+    #[serde(default, skip_serializing_if = "Grip::is_captured")]
+    pub grip: Grip,
 }
 
 impl Step {
@@ -368,7 +389,15 @@ impl Step {
             state_root,
             provenance,
             intervention,
+            grip: Grip::Captured,
         }
+    }
+
+    /// Say what the recorded `state_root` is worth. Separate from [`Step::new`]
+    /// because a step's grip comes from the environment, not from the transition.
+    pub fn with_grip(mut self, grip: Grip) -> Step {
+        self.grip = grip;
+        self
     }
 }
 
@@ -439,6 +468,10 @@ pub struct Trajectory {
     /// than a sandbox. It is where `restore` puts the files back by default.
     #[serde(default)]
     pub watched: Option<std::path::PathBuf>,
+    /// Worlds the program declared it could see, weakest grip first. Empty for the
+    /// ordinary case, where the workspace is the whole of the recorded world.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub worlds: Vec<crate::env::Manifest>,
 }
 
 /// Per-run, non-content observations: how each step was delivered and how long it took.

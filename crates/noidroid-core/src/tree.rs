@@ -76,6 +76,12 @@ impl Ignores {
         ignores
     }
 
+    /// Also leave this name out, wherever it appears.
+    pub fn add(&mut self, name: &str) -> &mut Ignores {
+        self.names.insert(name.trim_matches('/').to_string());
+        self
+    }
+
     fn skips(&self, name: &str) -> bool {
         self.names.contains(name)
     }
@@ -91,9 +97,18 @@ pub fn snapshot(dir: &Path, store: &Store) -> Result<Digest> {
 
 /// Hash a directory, leaving out what `ignores` names.
 pub fn snapshot_with(dir: &Path, store: &Store, ignores: &Ignores) -> Result<Digest> {
+    store.put_json(&Tree::new(entries_of(dir, store, ignores)?))
+}
+
+/// The entries a snapshot would contain, without sealing them into a tree.
+///
+/// An environment made of several parts hashes each part and merges the entries (see
+/// `env::Situation`), so the entry list has to be available separately from the tree
+/// it usually becomes.
+pub fn entries_of(dir: &Path, store: &Store, ignores: &Ignores) -> Result<Vec<TreeEntry>> {
     let mut entries = Vec::new();
     collect(dir, dir, store, ignores, &mut entries)?;
-    store.put_json(&Tree::new(entries))
+    Ok(entries)
 }
 
 fn collect(
@@ -169,10 +184,20 @@ pub fn materialize_with(
     let tree: Tree = store.get_json(digest)?;
     fs::create_dir_all(dir)?;
 
-    let wanted: BTreeSet<PathBuf> = tree.entries.iter().map(|e| dir.join(&e.path)).collect();
+    // `ignores` applies to the recorded entries as well as to what is already on
+    // disk. A tree can hold paths that are deliberately not files -- `.world/`, which
+    // is an environment's *report about* a world rather than any part of the
+    // workspace. Writing those out would let evidence become an input on the next run.
+    let entries: Vec<&TreeEntry> = tree
+        .entries
+        .iter()
+        .filter(|e| !e.path.split('/').any(|part| ignores.skips(part)))
+        .collect();
+
+    let wanted: BTreeSet<PathBuf> = entries.iter().map(|e| dir.join(&e.path)).collect();
     prune(dir, &wanted, ignores)?;
 
-    for entry in &tree.entries {
+    for entry in entries {
         let path = dir.join(&entry.path);
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
