@@ -1,5 +1,8 @@
 # Contributing
 
+Read [docs/direction.md](docs/direction.md) first — it says what the project is for
+and which decisions are already settled. This file says how to work on it.
+
 Paranoid Android is young enough that the interesting conventions are about *what we
 promise*, not about style. Style is enforced by CI; the rest is below.
 
