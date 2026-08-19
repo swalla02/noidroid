@@ -124,6 +124,9 @@ pub struct Report {
     pub delivery: BTreeMap<&'static str, u64>,
     pub denied: Vec<String>,
     pub exit_code: Option<i32>,
+    /// The last thing the program said, when it ended badly. A run that died
+    /// halfway reports as `truncated`, which is true and says nothing about why.
+    pub last_words: Option<String>,
     pub stdout_path: Option<PathBuf>,
     pub stderr_path: Option<PathBuf>,
     pub workspace: Option<PathBuf>,
@@ -274,6 +277,13 @@ pub fn run(repo: &Repo, spec: &RunSpec, mode: Mode, source: Option<&Trajectory>)
 
     let mut report = session.report;
     report.exit_code = status.code();
+    if !status.success() {
+        let said = tail_of(&stderr_path).replace("It said:", "");
+        let said = said.trim();
+        if !said.is_empty() {
+            report.last_words = Some(said.to_string());
+        }
+    }
 
     // Anything the recording still had to offer that we never reached.
     if !recorded.is_empty() && (session.index as usize) < recorded.len() {
