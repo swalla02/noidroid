@@ -634,7 +634,13 @@ fn draw_checkpoint(f: &mut Frame, area: Rect, app: &App) {
                 ),
             ]));
         }
-        lines.push(field("state", step.state_root.short()));
+        // The address, and what holding it is worth. A viewer that shows a state root
+        // without its grip invites the reader to assume `captured`, which for a page
+        // or a reactor is the one thing it is not.
+        lines.push(field(
+            "state",
+            &format!("{} · {}", step.state_root.short(), step.grip.label()),
+        ));
         if let Action::Decide { options, .. } = &step.action {
             lines.push(Line::raw(""));
             lines.push(Line::from(Span::styled(
