@@ -301,10 +301,6 @@ impl Situation {
         }
     }
 
-    pub fn workspace(&self) -> &Workspace {
-        &self.workspace
-    }
-
     /// Record an observation of a declared world, declaring it if this is the first
     /// time we have heard of it. `state` of `None` is a declaration that the program
     /// has this world and is *not* looking at it.
@@ -368,10 +364,6 @@ impl Situation {
         let mut out: Vec<Manifest> = self.worlds.values().map(|w| w.manifest()).collect();
         out.sort_by_key(|m| (std::cmp::Reverse(m.grip.rank()), m.name.clone()));
         out
-    }
-
-    pub fn has_worlds(&self) -> bool {
-        !self.worlds.is_empty()
     }
 }
 
