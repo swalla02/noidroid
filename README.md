@@ -169,6 +169,30 @@ See [`examples/browser_agent/`](examples/browser_agent/README.md). The adapter n
 
 ---
 
+## Committing a failure
+
+A recording is only a regression test if it can leave the machine it was made on.
+`.noidroid/` is gitignored and full of sharded object files; `export` puts the
+trajectory and everything it reaches into one file you can commit.
+
+```console
+$ noidroid export run-1
+exported run-1 → run-1.noidroid.json (9 object(s), 4.6 KB)
+
+$ noidroid import run-1.noidroid.json     # anywhere, empty store
+imported run-1 (5 step(s), 9 object(s), every address re-checked)
+```
+
+The file is readable JSON, so a reviewer can see what the agent actually said in the
+diff. Every address is re-hashed on the way in — a bundle arrives from somewhere
+else, so its claim that an address holds given bytes is checked, not believed, and a
+tampered one is refused.
+
+What a bundle carries is the recording, not the program. Replaying it needs the
+checkout it was recorded from, and says so plainly if it is missing.
+
+---
+
 ## Which step actually caused it
 
 A trace tells you what happened. It cannot tell you which step *caused* it, because
@@ -304,6 +328,7 @@ noidroid diff run-1 alt-1
 | `noidroid checkout <traj>@<step> <dir>` | write out the workspace as it was |
 | `noidroid bisect <traj>` | find which decision, changed, would have flipped the outcome |
 | `noidroid restore <traj>@<step>` | put the files back as they were, keeping a way out |
+| `noidroid export` · `import` | move a trajectory between machines, as one committable file |
 | `noidroid tree` · `diff` · `verify` | the branch graph, a comparison, a store integrity check |
 | `noidroid tui` | browse trajectories and explore from a checkpoint, interactively |
 | `noidroid stand` | 「 ゴ ゴ ゴ ゴ 」 |

@@ -8,6 +8,7 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 use serde_json::Value;
 
+use noidroid_core::bundle;
 use noidroid_core::engine::{self, Mode, Report, RunSpec};
 use noidroid_core::model::{Action, Intervention, Provenance, Step, Trajectory};
 use noidroid_core::repo::{self, Repo};
@@ -121,6 +122,20 @@ enum Command {
         #[arg(long, value_name = "TARGET=JSON")]
         simulate: Vec<String>,
     },
+    /// Write a trajectory and everything it reaches to one committable file.
+    Export {
+        trajectory: String,
+        /// Where to write it. Defaults to `<trajectory>.noidroid.json`.
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
+    /// Read a trajectory back in from a bundle.
+    Import {
+        file: PathBuf,
+        /// Import under a different name.
+        #[arg(long = "as", value_name = "NAME")]
+        rename: Option<String>,
+    },
     /// Show the branch graph.
     Tree,
     /// Compare two trajectories.
@@ -215,6 +230,8 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
             first,
             simulate,
         } => cmd_bisect(&repo, &cwd, &trajectory, goal, first, simulate),
+        Command::Export { trajectory, output } => cmd_export(&repo, &trajectory, output),
+        Command::Import { file, rename } => cmd_import(&repo, &file, rename.as_deref()),
         Command::Tree => cmd_tree(&repo),
         Command::Diff { a, b } => cmd_diff(&repo, &a, &b),
         Command::Verify => cmd_verify(&repo),
@@ -895,6 +912,68 @@ fn slug(value: &Value) -> String {
         })
         .collect();
     cleaned.trim_matches('-').chars().take(24).collect()
+}
+
+/// Make a recording into something you can commit.
+///
+/// A trajectory is only a regression test if it can leave the machine it was recorded
+/// on. `.noidroid/` is gitignored and full of sharded object files; a bundle is one
+/// file holding the trajectory and everything it reaches.
+fn cmd_export(repo: &Repo, name: &str, output: Option<PathBuf>) -> Result<ExitCode> {
+    let bundle = bundle::export(repo, name)?;
+    let path = output.unwrap_or_else(|| PathBuf::from(format!("{name}.noidroid.json")));
+    let encoded = serde_json::to_vec_pretty(&bundle)?;
+    std::fs::write(&path, &encoded)?;
+    println!(
+        "{} {} {}",
+        shell("exported"),
+        name,
+        dim(&format!(
+            "→ {} ({} object(s), {})",
+            path.display(),
+            bundle.objects.len(),
+            human_size(encoded.len())
+        ))
+    );
+    println!(
+        "  {}\n    noidroid import {}\n    noidroid replay {name}",
+        dim("commit it, and anywhere it lands:"),
+        path.display()
+    );
+    Ok(ExitCode::SUCCESS)
+}
+
+fn cmd_import(repo: &Repo, file: &Path, rename: Option<&str>) -> Result<ExitCode> {
+    let bytes = std::fs::read(file)?;
+    let bundle: bundle::Bundle = serde_json::from_slice(&bytes)?;
+    let objects = bundle.objects.len();
+    let trajectory = bundle::import(repo, bundle, rename)?;
+    println!(
+        "{} {} {}",
+        shell("imported"),
+        trajectory.name,
+        dim(&format!(
+            "({} step(s), {objects} object(s), every address re-checked)",
+            trajectory.steps
+        ))
+    );
+    println!("    noidroid log {}", trajectory.name);
+    Ok(ExitCode::SUCCESS)
+}
+
+fn human_size(bytes: usize) -> String {
+    const UNITS: [&str; 4] = ["B", "KB", "MB", "GB"];
+    let mut size = bytes as f64;
+    let mut unit = 0;
+    while size >= 1024.0 && unit + 1 < UNITS.len() {
+        size /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{size:.1} {}", UNITS[unit])
+    }
 }
 
 fn cmd_tree(repo: &Repo) -> Result<ExitCode> {

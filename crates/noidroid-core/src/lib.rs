@@ -9,6 +9,7 @@
 //! The core knows nothing about flights, browsers, robots or laboratories. It knows
 //! `call`, `decide`, `result` and `finish` — see [`proto`].
 
+pub mod bundle;
 pub mod engine;
 pub mod error;
 pub mod hash;

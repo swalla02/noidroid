@@ -9,6 +9,13 @@ how the package version relates to `STEP_VERSION`, the on-disk object format.
 
 ### Added
 
+- **`noidroid export` / `noidroid import`** — a trajectory and everything it reaches
+  as one committable JSON file. A recording is only a regression test if it can leave
+  the machine it was made on, and `.noidroid/` is gitignored and machine-local. The
+  bundle stays readable so a reviewer sees what the agent said in the diff, and every
+  address is re-hashed on import: a bundle arrives from elsewhere, so its claim that
+  an address holds given bytes is checked rather than believed.
+
 - **`noidroid bisect <trajectory>`** — automatic causal attribution. Every recorded
   decision is re-run from its own checkpoint with a different choice, and the earliest
   one that changes the outcome is reported. A trace cannot answer which step *caused*
@@ -34,6 +41,11 @@ how the package version relates to `STEP_VERSION`, the on-disk object format.
   the program, which writes files, so they always get their own copy.
 
 ### Fixed
+
+- Replaying a trajectory whose program is not present reported that the process never
+  connected, which is true and unhelpful. It now says that a trajectory records what a
+  program did rather than the program itself — the first thing anyone hits after
+  importing a bundle.
 
 - `materialize` pruned anything the recorded tree did not contain, without consulting
   the ignore list that had kept it *out* of the recording. Restoring into a real

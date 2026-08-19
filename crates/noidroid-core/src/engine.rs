@@ -1172,7 +1172,7 @@ fn spawn(
     stdout_path: &Path,
     stderr_path: &Path,
 ) -> Result<Child> {
-    let resolved = resolve_command(&spec.command, &spec.launch_dir);
+    let resolved = resolve_command(&spec.command, &spec.launch_dir)?;
     let (program, args) = resolved
         .split_first()
         .ok_or_else(|| Error::Protocol("no command given".into()))?;
@@ -1192,24 +1192,34 @@ fn spawn(
 
 /// The child runs with the workspace as its working directory, so any path arguments
 /// that were relative to the launch directory are resolved before we hand them over.
-fn resolve_command(command: &[String], launch_dir: &Path) -> Vec<String> {
-    command
-        .iter()
-        .map(|arg| {
-            if arg.starts_with('-') {
-                return arg.clone();
-            }
-            let candidate = launch_dir.join(arg);
-            if candidate.exists() {
+fn resolve_command(command: &[String], launch_dir: &Path) -> Result<Vec<String>> {
+    let mut resolved = Vec::with_capacity(command.len());
+    for arg in command {
+        if arg.starts_with('-') {
+            resolved.push(arg.clone());
+            continue;
+        }
+        let candidate = launch_dir.join(arg);
+        if candidate.exists() {
+            resolved.push(
                 candidate
                     .canonicalize()
                     .map(|p| p.to_string_lossy().to_string())
-                    .unwrap_or_else(|_| arg.clone())
-            } else {
-                arg.clone()
-            }
-        })
-        .collect()
+                    .unwrap_or_else(|_| arg.clone()),
+            );
+            continue;
+        }
+        // Something that looks like a path and is not there. Catching it now turns a
+        // confusing "the process never connected" into the actual problem — which for
+        // an imported bundle is that a recording is not a program.
+        if arg.contains('/') && !Path::new(arg).is_absolute() {
+            return Err(Error::NotFound(format!(
+                "the recorded command refers to '{arg}', which is not here.\n  A trajectory records what a program did, not the program itself —\n  run this from the checkout it was recorded in."
+            )));
+        }
+        resolved.push(arg.clone());
+    }
+    Ok(resolved)
 }
 
 fn accept(listener: &UnixListener, child: &mut Child) -> Result<Option<UnixStream>> {
