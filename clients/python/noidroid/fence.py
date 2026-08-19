@@ -30,6 +30,9 @@ __all__ = ["install", "blocked", "Escaped"]
 _blocked: list[str] = []
 _installed = False
 
+#: The modes that are reconstructions rather than recordings.
+_RECONSTRUCTIONS = {"replay", "branch"}
+
 #: Loopback is allowed: the engine's socket, the recording proxy, local stand-ins.
 _LOCAL = {"127.0.0.1", "::1", "localhost", "0.0.0.0"}
 
@@ -105,11 +108,16 @@ def install(strict: bool = True) -> None:
 def install_for_mode(mode: Optional[str] = None) -> bool:
     """Put the fence up when the run is a reconstruction. Returns whether it went up.
 
-    Only during a replay. A recording is *supposed* to reach the world — that is what
-    it is recording — so fencing it would block the very traffic being captured.
+    A replay and a branch both are one. A branch re-derives a recorded prefix and
+    then deliberately does something else, and unmediated traffic is exactly as
+    unrecorded on either side of that point — so fencing only the replay would leave
+    the mode people actually run wide open.
+
+    A recording is *supposed* to reach the world — that is what it is recording — so
+    fencing it would block the very traffic being captured.
     """
     mode = mode or os.environ.get("NOIDROID_MODE", "")
-    if mode != "replay" or os.environ.get("NOIDROID_NO_FENCE") == "1":
+    if mode not in _RECONSTRUCTIONS or os.environ.get("NOIDROID_NO_FENCE") == "1":
         return False
     install(strict=True)
     return True

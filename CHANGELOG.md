@@ -9,8 +9,8 @@ how the package version relates to `STEP_VERSION`, the on-disk object format.
 
 ### Added
 
-- **The egress fence.** During a replay, an outbound socket to anything but loopback
-  is refused. A reconstruction is supposed to serve every mediated input from the
+- **The egress fence.** During a replay or a branch, an outbound socket to anything
+  but loopback is refused. A reconstruction is supposed to serve every mediated input from the
   recording and touch nothing, but that was only enforced for calls that went
   *through* the protocol — anything a program did behind our back still reached the
   network, and nothing said so. The replay finished and reported itself faithful. That

@@ -6,10 +6,12 @@
 //! nothing said so: the replay finished, reported itself faithful, and the trajectory
 //! looked real. That is the worst failure this project has, because it is silent.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use noidroid_core::engine::{self, Mode, RunSpec};
+use noidroid_core::model::Intervention;
 use noidroid_core::Repo;
 
 /// Reaches for the network only when told to — and by IP, so a blocked attempt needs
@@ -132,4 +134,38 @@ fn recording_is_never_fenced() {
             "the fence must not fire while recording, got: {said}"
         );
     }
+}
+
+/// A branch is a reconstruction too — it re-derives a recorded prefix and only then
+/// does something else. Traffic nobody mediated is exactly as unrecorded on either
+/// side of that point, and the branch is the mode people actually run.
+#[test]
+fn a_branch_is_fenced_the_same_as_a_replay() {
+    let f = Fixture::new("branched");
+    let recorded = engine::run(&f.repo, &f.spec(Some("run-1"), false), Mode::Record, None)
+        .expect("recording should succeed")
+        .trajectory
+        .expect("a recording produces a trajectory");
+
+    let report = engine::run(
+        &f.repo,
+        &f.spec(Some("alt-1"), true),
+        Mode::Branch {
+            at: 1,
+            intervention: Intervention::ReplaceResult {
+                value: serde_json::json!({"ok": false}),
+            },
+            simulate: BTreeMap::new(),
+        },
+        Some(&recorded),
+    )
+    .expect("the branch should run to completion");
+
+    let said = report
+        .last_words
+        .expect("the branch left the machine, so it should have died saying so");
+    assert!(
+        said.contains("93.184.216.34") && said.contains("never recorded"),
+        "a branch must be fenced like a replay, got: {said}"
+    );
 }
