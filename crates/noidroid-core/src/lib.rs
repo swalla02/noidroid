@@ -19,6 +19,6 @@ pub mod repo;
 pub mod store;
 pub mod tree;
 
-pub use error::{Error, Result};
+pub use error::{Doing, Error, Result};
 pub use hash::Digest;
 pub use repo::Repo;
