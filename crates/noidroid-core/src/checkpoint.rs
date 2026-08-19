@@ -75,8 +75,6 @@ pub struct Checkpoint {
     pub evidence: Grip,
     /// This step's own provenance, already joined along the chain.
     pub grounding: Provenance,
-    /// Whether this step is one an intervention can be applied to at all.
-    pub branchable: bool,
 }
 
 /// Read the chain at `index`.
@@ -116,7 +114,6 @@ pub fn at(chain: &[(Digest, Step)], index: u64) -> Option<Checkpoint> {
                             },
                             evidence: evidence_over(chain, index),
                             grounding: step.provenance,
-                            branchable: branchable(&step.action),
                         });
                     }
                     reach = Reach::RebuildAndRestore;
@@ -131,17 +128,7 @@ pub fn at(chain: &[(Digest, Step)], index: u64) -> Option<Checkpoint> {
         reach,
         evidence: evidence_over(chain, index),
         grounding: step.provenance,
-        branchable: branchable(&step.action),
     })
-}
-
-/// Every checkpoint in a trajectory. Used by anything that reasons across steps —
-/// `bisect` most of all, which must not report an unreachable probe as "did not flip
-/// the outcome".
-pub fn all(chain: &[(Digest, Step)]) -> Vec<Checkpoint> {
-    (0..chain.len() as u64)
-        .filter_map(|i| at(chain, i))
-        .collect()
 }
 
 /// The weakest grip anywhere in `0..=index`: what a reconstruction of that prefix
@@ -151,10 +138,6 @@ fn evidence_over(chain: &[(Digest, Step)], index: u64) -> Grip {
         .iter()
         .take(index as usize + 1)
         .fold(Grip::Captured, |acc, (_, s)| acc.join(s.grip))
-}
-
-fn branchable(action: &Action) -> bool {
-    matches!(action, Action::Call { .. } | Action::Decide { .. })
 }
 
 fn target_of(action: &Action) -> String {
