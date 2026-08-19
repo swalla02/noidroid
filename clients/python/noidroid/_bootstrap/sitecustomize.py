@@ -13,7 +13,11 @@ import sys
 if os.environ.get("NOIDROID_SOCKET") and not os.environ.get("_NOIDROID_BOOTSTRAPPED"):
     os.environ["_NOIDROID_BOOTSTRAPPED"] = "1"
     try:
-        from noidroid import auto
+        from noidroid import auto, fence
+
+        # Up as early as possible: a module-level request at import time would
+        # otherwise escape before the program ever reaches connect().
+        fence.install_for_mode()
 
         hooked = auto.install()
         # Always printed. This used to be gated on an environment variable that

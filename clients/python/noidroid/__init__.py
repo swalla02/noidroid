@@ -304,4 +304,10 @@ def connect():
     path = os.environ.get("NOIDROID_SOCKET")
     if not path:
         return _PassThrough()
+    # During a reconstruction nothing should reach the network: everything is served
+    # from the recording. Anything that still tries was never recorded, and saying so
+    # loudly is the whole point.
+    from . import fence
+
+    fence.install_for_mode()
     return Session(path)

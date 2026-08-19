@@ -518,6 +518,14 @@ fn cmd_replay(repo: &Repo, cwd: &Path, name: &str) -> Result<ExitCode> {
         for d in &report.divergences {
             println!("    @{} {} — {}", d.index, warn(d.kind.label()), d.detail);
         }
+        // A run that died halfway reports as truncated, which is true and explains
+        // nothing. What it said on the way out usually is the explanation.
+        if let Some(said) = &report.last_words {
+            println!("\n  {}", dim("the program's last words:"));
+            for line in said.lines() {
+                println!("    {}", line.trim());
+            }
+        }
         Ok(ExitCode::from(1))
     }
 }
