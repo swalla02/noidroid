@@ -47,15 +47,56 @@ fn repo_root() -> PathBuf {
 /// and the tests below then fail with an agent that "aborted" for no stated reason.
 /// Skipping is the honest outcome; a green suite that never ran the browser is not.
 fn browser_available() -> bool {
+    match unavailable_because() {
+        None => true,
+        Some(why) => {
+            eprintln!("SKIP: browser adapter test — {why}");
+            false
+        }
+    }
+}
+
+/// One line on purpose. `cargo fmt` joins a multi-line string literal's continuations
+/// and keeps the source indentation, which turns an indented Python block into an
+/// `IndentationError` — a probe that fails in 13ms without ever launching anything and
+/// reports it as "no browser here".
+const LAUNCH_PROBE: &str = "from playwright.sync_api import sync_playwright as s; p = s().start(); p.chromium.launch().close(); p.stop()";
+
+/// `None` when a browser really did start. Otherwise the reason, verbatim, because a
+/// skip that does not say why is how a suite ends up quietly not running.
+fn unavailable_because() -> Option<String> {
     let probe = Command::new("python3")
-        .args([
-            "-c",
-            "from playwright.sync_api import sync_playwright\n             with sync_playwright() as p:\n             \x20   p.chromium.launch().close()",
-        ])
+        .args(["-c", LAUNCH_PROBE])
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
-    matches!(probe, Ok(s) if s.success())
+        .stderr(Stdio::piped())
+        .output();
+    match probe {
+        Err(e) => Some(format!("python3 would not start: {e}")),
+        Ok(out) if out.status.success() => None,
+        Ok(out) => {
+            // Playwright's failure is buried in pages of driver chatter, and the last
+            // line is usually "<gracefully close end>". The line that names the cause
+            // is the one worth putting in front of whoever has to fix it.
+            let said = String::from_utf8_lossy(&out.stderr);
+            let lines: Vec<&str> = said.lines().filter(|l| !l.trim().is_empty()).collect();
+            let last = lines
+                .iter()
+                // The host-level cause, when there is one: a missing shared library is
+                // what actually stops a downloaded Chromium, and it is the only line
+                // that tells anyone what to install.
+                .find(|l| l.contains("error while loading"))
+                // Otherwise the raised error, which comes after its traceback.
+                .or_else(|| lines.iter().rev().find(|l| l.contains("Error")))
+                .or_else(|| lines.last())
+                .unwrap_or(&"it said nothing")
+                .trim()
+                .to_string();
+            Some(format!(
+                "chromium would not launch ({last}). Install it with: \
+                 pip install playwright && playwright install --with-deps chromium"
+            ))
+        }
+    }
 }
 
 /// An agent that looks at a page which cannot be reproduced, then makes a decision.
@@ -245,10 +286,6 @@ impl Drop for Fixture {
 fn a_browser_session_reconstructs_from_recorded_responses_alone() {
     let _serial = one_at_a_time();
     if !browser_available() {
-        eprintln!(
-            "SKIP: browser adapter test needs playwright and chromium \
-             (pip install playwright && playwright install chromium)"
-        );
         return;
     }
 
@@ -347,7 +384,6 @@ fn a_browser_session_reconstructs_from_recorded_responses_alone() {
 fn a_browser_branch_can_reach_a_different_outcome() {
     let _serial = one_at_a_time();
     if !browser_available() {
-        eprintln!("SKIP: browser adapter test needs playwright and chromium");
         return;
     }
 
@@ -382,7 +418,6 @@ fn a_browser_branch_can_reach_a_different_outcome() {
 fn a_page_that_cannot_be_reproduced_makes_everything_after_it_unknown() {
     let _serial = one_at_a_time();
     if !browser_available() {
-        eprintln!("SKIP: browser adapter test needs playwright and chromium");
         return;
     }
 
