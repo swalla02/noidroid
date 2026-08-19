@@ -21,11 +21,26 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install Playwright and Chromium
+      - name: Install Playwright
         run: |
           python -m pip install --upgrade pip
           python -m pip install playwright
-          python -m playwright install --with-deps chromium
+          echo "PW_VERSION=$(python -m playwright --version | tr ' ' '-')" >> "$GITHUB_ENV"
+      - name: Cache the browser
+        id: browser-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-${{ env.PW_VERSION }}-chromium
+      - name: Install Chromium
+        # System packages are not cached, so they install either way; only the
+        # browser download is skipped on a hit.
+        run: |
+          if [ "${{ steps.browser-cache.outputs.cache-hit }}" = "true" ]; then
+            python -m playwright install-deps chromium
+          else
+            python -m playwright install --with-deps chromium
+          fi
       - run: cargo test --all
       - name: The tag must match the version in Cargo.toml
         run: |
@@ -61,7 +76,9 @@ jobs:
           cp "target/${{ matrix.target }}/release/noidroid" "dist/$name/"
           cp README.md LICENSE manifesto.md "dist/$name/"
           tar -C dist -czf "dist/$name.tar.gz" "$name"
-          shasum -a 256 "dist/$name.tar.gz" > "dist/$name.tar.gz.sha256"
+          # Written from inside dist/ so the file names itself alone. With a path
+          # in it, `sha256sum -c` fails wherever the artifact is unpacked.
+          ( cd dist && shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256" )
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.target }}

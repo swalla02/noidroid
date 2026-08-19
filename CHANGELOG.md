@@ -7,6 +7,16 @@ how the package version relates to `STEP_VERSION`, the on-disk object format.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-19
+
+### Fixed
+
+- Release checksum files recorded `dist/<name>.tar.gz` as the path, so `sha256sum -c`
+  failed for anyone who downloaded them anywhere else. Found by verifying the
+  published v0.1.0 artifacts rather than by reading the workflow.
+- CI re-downloaded Chromium on every run, which was most of the wall time on the
+  slowest job. It is now cached against the Playwright version.
+
 ### Added
 
 - **`noidroid export` / `noidroid import`** — a trajectory and everything it reaches
@@ -173,5 +183,6 @@ only the sandboxed workspace is captured, the ambient environment is not capture
 branch is not a prediction, browser reconstruction is bounded by the recorded page
 set, and no scale work.
 
-[Unreleased]: https://github.com/swalla02/noidroid/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/swalla02/noidroid/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/swalla02/noidroid/releases/tag/v0.2.0
 [0.1.0]: https://github.com/swalla02/noidroid/releases/tag/v0.1.0
