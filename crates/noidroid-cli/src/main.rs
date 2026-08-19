@@ -55,6 +55,11 @@ enum Command {
         /// read, never written; `.noidroidignore` extends the skipped directories.
         #[arg(long, value_name = "DIR")]
         watch: Option<PathBuf>,
+        /// Record provider traffic by standing between the agent and the API, for
+        /// agents you did not write and programs in any language.
+        #[arg(long, value_name = "URL", num_args = 0..=1,
+              default_missing_value = "https://api.anthropic.com")]
+        proxy: Option<String>,
         /// The command to run, after `--`.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
         command: Vec<String>,
@@ -199,8 +204,9 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
             auto,
             allow_gaps,
             watch,
+            proxy,
             command,
-        } => cmd_run(&repo, &cwd, name, auto, allow_gaps, watch, command),
+        } => cmd_run(&repo, &cwd, name, auto, allow_gaps, watch, proxy, command),
         Command::Log { trajectory } => cmd_log(&repo, trajectory),
         Command::Show { reference } => cmd_show(&repo, &reference),
         Command::Replay { trajectory } => cmd_replay(&repo, &cwd, &trajectory),
@@ -303,6 +309,7 @@ fn cmd_run(
     auto: bool,
     allow_gaps: bool,
     watch: Option<PathBuf>,
+    proxy: Option<String>,
     command: Vec<String>,
 ) -> Result<ExitCode> {
     let name = name.unwrap_or_else(|| repo.next_name("run"));
@@ -311,6 +318,23 @@ fn cmd_run(
             "trajectory '{name}' already exists; history is append-only"
         )));
     }
+    // The proxy is an ordinary client of the protocol that happens to run the agent
+    // as its own child, so the engine still supervises exactly one process.
+    let command = match &proxy {
+        Some(upstream) => {
+            let mut wrapped = vec![
+                "python3".to_string(),
+                "-m".to_string(),
+                "noidroid.proxy".to_string(),
+                "--upstream".to_string(),
+                upstream.clone(),
+                "--".to_string(),
+            ];
+            wrapped.extend(command);
+            wrapped
+        }
+        None => command,
+    };
     let watch = match watch {
         Some(dir) => Some(
             dir.canonicalize()
@@ -322,7 +346,7 @@ fn cmd_run(
         command,
         launch_dir: cwd.to_path_buf(),
         name: Some(name.clone()),
-        env: if auto {
+        env: if auto || proxy.is_some() {
             auto_capture_env_with(allow_gaps)?
         } else {
             Vec::new()

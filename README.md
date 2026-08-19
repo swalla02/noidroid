@@ -354,6 +354,7 @@ noidroid diff run-1 alt-1
 | `noidroid replay <traj>` | re-derive a trajectory and check it still hashes the same |
 | `noidroid branch <traj>@<step>` | diverge: `--decide`, `--result` or `--fail` |
 | `noidroid checkout <traj>@<step> <dir>` | write out the workspace as it was |
+| `noidroid run --proxy -- <cmd>` | record an agent you did not write, in any language |
 | `noidroid bisect <traj>` | find which decision, changed, would have flipped the outcome |
 | `noidroid restore <traj>@<step>` | put the files back as they were, keeping a way out |
 | `noidroid export` · `import` | move a trajectory between machines, as one committable file |
@@ -387,6 +388,27 @@ print(reply.content[0].text)                       # a real Message, replayed
 
 Record it once, then replay it with the network unplugged: the recorded response is
 served back and the SDK's own type is rebuilt, so `reply.content[0].text` still works.
+
+### Agents you did not write
+
+`--auto` patches SDKs inside a Python process, which is no help for a coding agent you
+installed or a service in another language. Both common clients read their endpoint
+from the environment, so there is a second way in:
+
+```bash
+noidroid run --proxy -- claude --print "fix the failing test"
+```
+
+The proxy stands between the agent and the provider and records what actually crosses
+the wire. No patching, no TLS interception, no language requirement — and unlike a
+trace exported from an observability tool, what gets recorded is the request itself,
+so a replay matches on what was sent rather than on a lossy summary of it.
+
+It captures the provider traffic and nothing else: files the agent writes, commands it
+runs and other services it calls are invisible to it. Pair it with `--watch` to record
+the files too.
+
+### What neither can do
 
 What automatic capture **cannot** do is branch. No amount of patching can infer that a
 value was a *choice among alternatives*, and that is what an intervention needs — so
