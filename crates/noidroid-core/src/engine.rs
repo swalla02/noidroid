@@ -10,6 +10,12 @@
 //! same objects as the recording, the reconstruction is faithful with respect to
 //! everything we captured. If it does not, we say exactly where it stopped matching
 //! and refuse to pretend otherwise.
+//!
+//! What "everything we captured" covers is the environment's business, not this
+//! module's. The engine asks a [`Situation`] to address the world and to say what that
+//! address is worth. Where the workspace is the whole world the answer is `captured`
+//! and nothing about the old behaviour changes; where it is not -- a browser page, a
+//! simulator, a reactor -- the weaker answer is recorded rather than rounded up.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -23,6 +29,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
 
+use crate::checkpoint;
+use crate::env::{Environment, Grip, Situation, State, Workspace};
 use crate::error::{Doing, Error, Result};
 use crate::hash::Digest;
 use crate::model::{
@@ -119,6 +127,9 @@ pub struct Report {
     /// Workspace snapshots restored from the recording because the mediated effect
     /// that produced them was deliberately not re-executed.
     pub state_restored: u64,
+    /// The weakest grip anywhere in this run: what it could prove at its weakest
+    /// point, which is what it can prove.
+    pub grip: Grip,
     pub divergences: Vec<Divergence>,
     pub provenance: BTreeMap<&'static str, u64>,
     pub delivery: BTreeMap<&'static str, u64>,
@@ -164,6 +175,16 @@ pub fn run(repo: &Repo, spec: &RunSpec, mode: Mode, source: Option<&Trajectory>)
         None => Vec::new(),
     };
 
+    // Whether a checkpoint can be re-entered is a property of the recording, so it is
+    // answered before anything is spawned. The version of this that finds out halfway
+    // through is the version that re-drives a browser into a form it already
+    // submitted, in order to discover that it should not have.
+    if let Mode::Branch { at, .. } = &mode {
+        if let Some(why) = checkpoint::at(&recorded, *at).and_then(|c| c.reach.why()) {
+            return Err(Error::Refused(why));
+        }
+    }
+
     let run_label = spec.name.clone().unwrap_or_else(|| {
         format!(
             "replay-{}",
@@ -196,10 +217,20 @@ pub fn run(repo: &Repo, spec: &RunSpec, mode: Mode, source: Option<&Trajectory>)
     } else {
         tree::Ignores::none()
     };
-    // Reconstruction starts from the world the recording started from.
+    // The world starts as the one part of it the engine owns outright. Anything else
+    // is added when the program says it can see it.
+    let mut situation = Situation::new(Workspace::new(&workspace, ignores));
+    // Reconstruction starts from the world the recording started from -- as much of it
+    // as this environment can put back, which the environment itself decides.
     if let Some(t) = source {
         let genesis: Step = repo.store.get_json(&t.genesis)?;
-        tree::materialize(&genesis.state_root, &repo.store, &workspace)?;
+        situation.restore(
+            &State {
+                root: genesis.state_root.clone(),
+                grip: genesis.grip,
+            },
+            &repo.store,
+        )?;
     }
 
     let socket_path = unique_socket_path();
@@ -225,8 +256,7 @@ pub fn run(repo: &Repo, spec: &RunSpec, mode: Mode, source: Option<&Trajectory>)
         repo,
         mode: &mode,
         recorded: &recorded,
-        workspace: workspace.clone(),
-        ignores,
+        env: situation,
         parent: None,
         parent_provenance: Provenance::Real,
         index: 0,
@@ -355,6 +385,7 @@ pub fn run(repo: &Repo, spec: &RunSpec, mode: Mode, source: Option<&Trajectory>)
                 .iter()
                 .any(|(k, v)| k == "NOIDROID_ALLOW_GAPS" && v == "1"),
             watched: if watching { spec.watch.clone() } else { None },
+            worlds: session.env.manifests(),
         };
         repo.save_trajectory(&trajectory)?;
         repo.save_notes(&name, &session.notes)?;
@@ -369,8 +400,8 @@ struct Session<'a> {
     repo: &'a Repo,
     mode: &'a Mode,
     recorded: &'a [(Digest, Step)],
-    workspace: PathBuf,
-    ignores: tree::Ignores,
+    /// The world, in parts. Everything this module knows about state goes through it.
+    env: Situation,
     parent: Option<Digest>,
     parent_provenance: Provenance,
     index: u64,
@@ -459,6 +490,16 @@ impl<'a> Session<'a> {
                     };
                 }
                 self.on_result(json!({ "error": message, "type": kind }))
+            }
+            Request::Observe {
+                of,
+                state,
+                restorable,
+            } => {
+                let observed = if state.is_null() { None } else { Some(&state) };
+                self.env
+                    .report(&of, observed, restorable, &self.repo.store)?;
+                Ok(Response::ack())
             }
             Request::Finish { status, result } => {
                 let action = Action::Finish {
@@ -920,39 +961,90 @@ impl<'a> Session<'a> {
         suppressed_side_effect: bool,
     ) -> Result<()> {
         let started = Instant::now();
-        let actual_root = tree::snapshot_with(&self.workspace, &self.repo.store, &self.ignores)?;
         let expected = self.recorded.get(self.index as usize).cloned();
+        // While reconstructing, the program is not touching the world -- every value
+        // it asked for was served from the recording -- so it has nothing new to say
+        // about it, and the honest source for "what did it look like here" is the
+        // recording. Testimony obeys the recorded-input oracle like everything else.
+        // A program that *did* re-drive its world has already reported, and its report
+        // wins: that is the case where the comparison means something.
+        if matches!(self.phase(), Phase::Reconstructing) {
+            if let Some((_, rec)) = &expected {
+                let tree = tree::read(&rec.state_root, &self.repo.store)?;
+                for (name, seen) in Situation::worlds_in(&tree) {
+                    self.env.adopt(&name, seen);
+                }
+            }
+        }
+        let observed = self.env.observe(&self.repo.store)?;
+        self.report.grip = self.report.grip.join(observed.grip);
 
         let state_root = match (&expected, suppressed_side_effect) {
             // The mediated effect that produced this state was deliberately not
-            // re-executed, so the workspace is restored from the recording instead.
-            // Counted as restored, never as verified: we did not prove this one.
+            // re-executed, so the recorded state is put back instead -- as far as the
+            // environment can put it back, which for anything but the workspace is
+            // not at all.
+            (Some((_, rec)), true) if observed.root == rec.state_root => {
+                // Already where the recording says it should be, with nothing put
+                // back to get there. That is the strongest thing we could have said,
+                // and it is checked rather than asserted.
+                self.report.state_verified += 1;
+                observed.root
+            }
             (Some((_, rec)), true) => {
-                if actual_root != rec.state_root {
-                    tree::materialize(&rec.state_root, &self.repo.store, &self.workspace)?;
+                let achieved = self.env.restore(
+                    &State {
+                        root: rec.state_root.clone(),
+                        grip: rec.grip,
+                    },
+                    &self.repo.store,
+                )?;
+                if achieved.is_captured() {
+                    // Counted as restored, never as verified: we did not prove this
+                    // one, we asserted it from the recording.
+                    self.report.state_restored += 1;
+                    rec.state_root.clone()
+                } else {
+                    // The environment could not put its world back, so asserting the
+                    // recorded address here would file a page nobody restored under
+                    // the address of the page the recording saw. Look again instead,
+                    // and record what is actually there.
+                    let after = self.env.observe(&self.repo.store)?;
+                    if matches!(self.phase(), Phase::Reconstructing | Phase::Diverging) {
+                        self.report.divergences.push(Divergence {
+                            index: self.index,
+                            kind: DivergenceKind::StateMismatch,
+                            detail: format!(
+                                "the world hashes to {} but the recording says {}; \
+                                 this environment reports it as {} and cannot put it back",
+                                after.root.short(),
+                                rec.state_root.short(),
+                                achieved.label()
+                            ),
+                        });
+                    }
+                    after.root
                 }
-                self.report.state_restored += 1;
-                rec.state_root.clone()
             }
             (Some((_, rec)), false)
                 if matches!(self.phase(), Phase::Reconstructing | Phase::Diverging) =>
             {
-                if actual_root == rec.state_root {
+                if observed.root == rec.state_root {
                     self.report.state_verified += 1;
                 } else {
                     self.report.divergences.push(Divergence {
                         index: self.index,
                         kind: DivergenceKind::StateMismatch,
                         detail: format!(
-                            "workspace hashes to {} but the recording says {}",
-                            actual_root.short(),
+                            "the world hashes to {} but the recording says {}",
+                            observed.root.short(),
                             rec.state_root.short()
                         ),
                     });
                 }
-                actual_root
+                observed.root
             }
-            _ => actual_root,
+            _ => observed.root,
         };
 
         let step = Step::new(
@@ -964,7 +1056,8 @@ impl<'a> Session<'a> {
             self.parent_provenance,
             own,
             intervention,
-        );
+        )
+        .with_grip(observed.grip);
         for e in &step.effects {
             *self
                 .report
@@ -1002,6 +1095,7 @@ impl<'a> Session<'a> {
             wall_ms: now_ms(),
             duration_ms: started.elapsed().as_millis() as u64,
         });
+        self.env.settle();
         self.parent_provenance = step.provenance;
         self.parent = Some(digest);
         self.index += 1;
