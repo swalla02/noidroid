@@ -15,7 +15,7 @@ jobs:
       - name: Check the body for a closing reference
         env:
           BODY: ${{ github.event.pull_request.body }}
-          TITLE: ${{ github.event.pull_request.title }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
         run: |
           set -euo pipefail
           # GitHub's own closing keywords, so the link is real rather than cosmetic.
@@ -24,7 +24,7 @@ jobs:
             exit 0
           fi
           # Dependabot opens its own PRs and has no issue to close.
-          if [ "${{ github.event.pull_request.user.login }}" = "dependabot[bot]" ]; then
+          if [ "$AUTHOR" = "dependabot[bot]" ]; then
             echo "dependabot — exempt"
             exit 0
           fi
