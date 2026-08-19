@@ -14,6 +14,12 @@ recorded.
 Local addresses stay open on purpose: our own Unix socket, and loopback, which is
 where the recording proxy and local stand-ins live.
 
+One thing is allowed through, and only in the smallest window that works: a call the
+engine told us to execute. A plain replay authorises nothing, so the window never
+opens; a live replay authorises the targets it was asked for, and nothing else. That
+is what keeps `--live model` from being fenced out of the one call it exists to make
+without lowering the fence for the rest of the program.
+
 What it cannot see: subprocesses (a child does not inherit the patch), C extensions
 that bypass Python's socket module, and anything already connected before the fence
 went up.
@@ -21,14 +27,21 @@ went up.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import socket
+import threading
 from typing import Optional
 
-__all__ = ["install", "blocked", "Escaped"]
+__all__ = ["install", "blocked", "authorised", "Escaped"]
 
 _blocked: list[str] = []
 _installed = False
+
+#: Per-thread: are we inside a call the engine told us to execute? Thread-local
+#: because the proxy serves on one thread per request, and one authorised call must
+#: not open the fence for every other thread in the process.
+_window = threading.local()
 
 #: The modes that are reconstructions rather than recordings.
 _RECONSTRUCTIONS = {"replay", "branch"}
@@ -44,6 +57,28 @@ class Escaped(RuntimeError):
 def blocked() -> list[str]:
     """Addresses this run tried to reach and was not allowed to."""
     return list(_blocked)
+
+
+@contextlib.contextmanager
+def authorised():
+    """Open the fence for the body of a call the engine asked us to execute.
+
+    The engine says `execute` for exactly the interactions that are meant to touch
+    the world — none at all during a plain replay, and only the named targets during
+    a live one. Reaching the network anywhere else is the silent failure this module
+    exists to catch, so the window is as small as the authorisation is: this thread,
+    this call, and closed again the moment it returns.
+    """
+    depth = getattr(_window, "depth", 0)
+    _window.depth = depth + 1
+    try:
+        yield
+    finally:
+        _window.depth = depth
+
+
+def _inside_authorised_call() -> bool:
+    return getattr(_window, "depth", 0) > 0
 
 
 def _describe(address) -> str:
@@ -78,26 +113,34 @@ def install(strict: bool = True) -> None:
     def guard(self, address):
         if self.family == socket.AF_UNIX or _is_local(address):
             return None
+        if _inside_authorised_call():
+            return None  # the engine asked for this one
         where = _describe(address)
         _blocked.append(where)
+        what = os.environ.get("NOIDROID_MODE", "reconstruction")
         raise Escaped(
-            f"this replay tried to reach {where}, which means something it did was "
-            f"never recorded — so the replay is not a reproduction. Record the run "
-            f"again with that interaction mediated, or route it through the proxy."
+            f"this {what} tried to reach {where} outside any mediated call, which "
+            f"means nothing recorded it — so what it produced is not a "
+            f"reconstruction. Wrap that interaction in nd.call(), or route it "
+            f"through the proxy."
         )
+
+    def _noted(self, address) -> None:
+        if not (self.family == socket.AF_UNIX or _is_local(address)):
+            _blocked.append(_describe(address))
 
     def connect(self, address):
         if strict:
             guard(self, address)
-        elif not (self.family == socket.AF_UNIX or _is_local(address)):
-            _blocked.append(_describe(address))
+        else:
+            _noted(self, address)
         return original_connect(self, address)
 
     def connect_ex(self, address):
         if strict:
             guard(self, address)
-        elif not (self.family == socket.AF_UNIX or _is_local(address)):
-            _blocked.append(_describe(address))
+        else:
+            _noted(self, address)
         return original_connect_ex(self, address)
 
     connect.__noidroid_fenced__ = True

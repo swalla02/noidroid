@@ -19,7 +19,13 @@ how the package version relates to `STEP_VERSION`, the on-disk object format.
   failure reading, writing, listing or pruning now names the operation and the path,
   so a `NotFound` in CI says which file it could not find. This is what made the macOS
   failure in #44 unreadable for two runs. (#44)
-
+- **The fence blocked calls the engine had authorised.** Egress is now permitted for
+  the body of a call the engine answered `execute` to — and nowhere else, on the
+  thread that call runs on. A plain replay authorises nothing, so the window never
+  opens; a branch performs its post-fork calls, which are recorded and were never the
+  silent egress the fence exists to catch. Without this, `--live` would have been
+  fenced out of the one call it exists to make, and CI would not have noticed:
+  its stand-in is on loopback, which was allowed all along. (#46)
 
 ## [0.3.0] - 2026-08-19
 

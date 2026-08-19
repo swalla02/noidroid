@@ -213,7 +213,13 @@ class Session:
         directive = response.get("directive")
         if directive == "execute":
             try:
-                value = run()
+                # The engine authorised this one, so the fence stands aside for its
+                # body and closes again immediately after. Everywhere else in a
+                # reconstruction, an outbound socket is something nobody recorded.
+                from . import fence
+
+                with fence.authorised():
+                    value = run()
             except Exception as exc:  # the world failed; record that it did
                 self._rpc(
                     {

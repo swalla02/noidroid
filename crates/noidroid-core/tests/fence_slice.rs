@@ -29,6 +29,29 @@ if os.environ.get("SNEAK") == "1":
 nd.finish("success", {})
 "#;
 
+/// Reaches for the network *inside* a mediated call — the one place the engine can
+/// authorise. Where it ends up is recorded either way, so the failure message is the
+/// evidence: the fence names itself, a real network failure does not.
+const MEDIATED_AGENT: &str = r#"
+import socket
+import noidroid
+
+nd = noidroid.connect()
+nd.call("work.do", lambda: {"ok": True})
+
+def reach():
+    s = socket.socket()
+    s.settimeout(2)
+    s.connect(("203.0.113.1", 80))   # TEST-NET-3: routable nowhere
+    return {"reached": True}
+
+try:
+    nd.call("net.fetch", reach)
+    nd.finish("success", {"why": "reached"})
+except Exception as exc:
+    nd.finish("failure", {"why": str(exc)})
+"#;
+
 struct Fixture {
     dir: PathBuf,
     repo: Repo,
@@ -37,6 +60,10 @@ struct Fixture {
 
 impl Fixture {
     fn new(tag: &str) -> Fixture {
+        Fixture::of(tag, AGENT)
+    }
+
+    fn of(tag: &str, program: &str) -> Fixture {
         let dir = std::env::temp_dir().join(format!(
             "noidroid-fence-{tag}-{}-{}",
             std::process::id(),
@@ -47,7 +74,7 @@ impl Fixture {
         ));
         fs::create_dir_all(&dir).unwrap();
         let agent = dir.join("agent.py");
-        fs::write(&agent, AGENT).unwrap();
+        fs::write(&agent, program).unwrap();
         let repo = Repo::open(&dir).unwrap();
         Fixture { dir, repo, agent }
     }
@@ -177,5 +204,47 @@ fn a_branch_is_fenced_the_same_as_a_replay() {
     assert!(
         said.contains("93.184.216.34") && said.contains("never recorded"),
         "a branch must be fenced like a replay, got: {said}"
+    );
+}
+
+/// The fence stands aside for exactly what the engine authorised, and nothing else.
+///
+/// A branch executes its post-fork calls for real — that is what a branch is — and
+/// those calls are recorded, so they are not the silent egress this fence exists to
+/// catch. Blocking them would have made the fence refuse the very interactions the
+/// operator asked for, which is how a safety measure becomes a bug.
+#[test]
+fn the_fence_stands_aside_for_a_call_the_engine_asked_for() {
+    let f = Fixture::of("authorised", MEDIATED_AGENT);
+    let recorded = engine::run(&f.repo, &f.spec(Some("run-1"), false), Mode::Record, None)
+        .expect("recording should succeed")
+        .trajectory
+        .expect("a recording produces a trajectory");
+
+    // Branch before the network call, so it is re-performed past the fork rather
+    // than served back from the recording.
+    let branch = engine::run(
+        &f.repo,
+        &f.spec(Some("alt-1"), false),
+        Mode::Branch {
+            at: 1,
+            intervention: Intervention::ReplaceResult {
+                value: serde_json::json!({"ok": false}),
+            },
+            simulate: BTreeMap::new(),
+        },
+        Some(&recorded),
+    )
+    .expect("the branch should run to completion")
+    .trajectory
+    .expect("a branch produces a trajectory");
+
+    // TEST-NET-3 routes nowhere, so the call fails either way. *How* it failed is
+    // the evidence: the fence names itself, a network that is simply not there
+    // does not.
+    let why = branch.outcome.result["why"].as_str().unwrap_or("").to_string();
+    assert!(
+        !why.contains("never recorded"),
+        "the fence blocked a call the engine authorised: {why}"
     );
 }
