@@ -113,3 +113,57 @@ nd.finish("failure", {"reason": "always"})
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn a_trajectory_survives_leaving_the_machine_it_was_recorded_on() {
+    let dir = workdir("bundle");
+    let agent = repo_root().join("examples/llm_agent/agent.py");
+    let (_, ok) = noidroid(&dir, &["run", "--", "python3", agent.to_str().unwrap()]);
+    assert!(ok);
+
+    let bundle = dir.join("run-1.noidroid.json");
+    let (out, ok) = noidroid(&dir, &["export", "run-1", "-o", bundle.to_str().unwrap()]);
+    assert!(ok, "{out}");
+    assert!(
+        bundle.exists(),
+        "the bundle should have been written: {out}"
+    );
+
+    // A bundle is meant to be committed, so it has to be text a reviewer can read.
+    let text = std::fs::read_to_string(&bundle).unwrap();
+    assert!(
+        text.contains("search_faq"),
+        "the recorded content should be legible in a diff"
+    );
+
+    // Somewhere else entirely, with an empty store.
+    let elsewhere = workdir("elsewhere");
+    let (out, ok) = noidroid(&elsewhere, &["import", bundle.to_str().unwrap()]);
+    assert!(ok, "{out}");
+    let (log, ok) = noidroid(&elsewhere, &["log", "run-1"]);
+    assert!(ok && log.contains("tool_choice_1"), "{log}");
+
+    // Importing the same bundle again is refused rather than silently duplicating.
+    let (out, ok) = noidroid(&elsewhere, &["import", bundle.to_str().unwrap()]);
+    assert!(!ok && out.contains("already exists"), "{out}");
+    let (out, ok) = noidroid(
+        &elsewhere,
+        &["import", bundle.to_str().unwrap(), "--as", "from-ci"],
+    );
+    assert!(ok, "{out}");
+
+    // A tampered bundle is caught, because every address is re-checked on the way in.
+    let tampered = elsewhere.join("tampered.json");
+    std::fs::write(&tampered, text.replace("search_faq", "search_fax")).unwrap();
+    let (out, ok) = noidroid(
+        &elsewhere,
+        &["import", tampered.to_str().unwrap(), "--as", "bad"],
+    );
+    assert!(
+        !ok && (out.contains("corrupt") || out.contains("hash")),
+        "a bundle whose contents do not match their addresses must be refused: {out}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&elsewhere);
+}
