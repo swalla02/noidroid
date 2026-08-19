@@ -9,6 +9,9 @@ how the package version relates to `STEP_VERSION`, the on-disk object format.
 
 ### Fixed
 
+- An I/O failure now says what it was doing and on what path. `No such file or
+  directory` names none of the six operations that can produce it, which made a
+  real CI failure unreadable. (#42)
 - **Automatic capture failed open, and said it did not.** The README promised
   "`--auto` prints what it hooked; anything not listed was not recorded" — but the
   print was gated behind an environment variable nothing in the project ever set, so
