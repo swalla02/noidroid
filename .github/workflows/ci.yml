@@ -129,6 +129,29 @@ jobs:
           noidroid verify | tee verify.txt
           grep -q "intact:" verify.txt
 
+          # The reference environment: a world that can be re-driven and can never be
+          # put back. The release's central claim is that this reconstructs exactly,
+          # that a branch reaches a different outcome, and that a checkpoint sitting
+          # after an irreversible effect is refused rather than attempted.
+          noidroid run --name shift -- python3 examples/reference/agent.py || true
+          noidroid replay shift | tee shift-replay.txt
+          grep -q "faithful:" shift-replay.txt
+
+          noidroid show shift@8 | tee shift-show.txt
+          grep -q "witnessed" shift-show.txt
+          grep -q "WHAT THIS CHECKPOINT GUARANTEES" shift-show.txt
+
+          noidroid branch shift@8 --decide move=insert --label saved
+          noidroid diff shift saved | tee shift-diff.txt
+          grep -q "failure → success" shift-diff.txt
+          grep -q "the same objects, not copies" shift-diff.txt
+
+          last=$(python3 -c "import json;print(json.load(open('.noidroid/trajectories/shift.json'))['steps']-1)")
+          if noidroid branch "shift@$last" --fail x --label nope 2>refused.txt; then
+            echo "branching past an irreversible effect must be refused"; exit 1
+          fi
+          grep -q "irreversible" refused.txt
+
           # The Stand profile is pure output, so it either prints or it does not.
           noidroid stand | tee stand.txt
           grep -q "PARANOID ANDROID" stand.txt
