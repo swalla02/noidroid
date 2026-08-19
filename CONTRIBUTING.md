@@ -8,13 +8,29 @@ promise*, not about style. Style is enforced by CI; the rest is below.
 
 ## The loop
 
+Every change starts as an issue. Not as a courtesy — the issue is where the reasoning
+lives, and a repository whose pull requests carry the code but not the argument is one
+nobody can read back in six months.
+
 ```bash
-git switch -c feat/short-description        # or fix/, chore/, docs/, refactor/
-cargo test --all                            # 24 tests; browser ones skip without Chromium
+gh issue create                             # the problem, and why it is one
+git switch -c fix/25-egress-fence           # <type>/<issue-number>-<slug>
+cargo test --all                            # browser tests skip without Chromium
 cargo fmt --all && cargo clippy --all-targets -- -D warnings
 git commit                                  # Conventional Commits, see below
-gh pr create --fill
+gh pr create                                # body must contain "Closes #25"
+                                            # then: review, then merge
 ```
+
+Four rules, and CI enforces the third:
+
+1. **A bug or a feature becomes an issue first.** Including one found by a research
+   pass — especially then, because that is the reasoning most easily lost.
+2. **An issue gets its own branch**, named `<type>/<issue-number>-<slug>`.
+3. **A branch becomes a pull request that closes its issue.** The `Issue link` check
+   fails a PR whose body has no `Closes #N`. Dependabot is exempt; nothing else is.
+4. **A pull request is reviewed before it merges.** Green CI is not a review — it
+   says the code runs, not that it should exist or that it is the right shape.
 
 `main` is protected: it takes merges through pull requests, and CI has to be green.
 Nobody pushes to it directly, including maintainers.
