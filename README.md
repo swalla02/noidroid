@@ -169,6 +169,34 @@ See [`examples/browser_agent/`](examples/browser_agent/README.md). The adapter n
 
 ---
 
+## Replay is already a regression test
+
+`noidroid replay` re-executes the *current* program against a recorded trajectory. If
+the program changed, it says where its behaviour stopped matching, field by field, and
+exits non-zero:
+
+```console
+$ noidroid replay run-1
+  steps re-derived       2/4
+  divergences:
+    @2 key_mismatch —
+      target: recorded "flights.seatmap", got "flights.availability"
+      args.flight: recorded "FL-101", absent now
+      args.id: not recorded, got "FL-101"
+$ echo $?
+1
+```
+
+Export the trajectory, commit it, and a production failure becomes a test that fails
+the day somebody changes the decision that caused it.
+
+The boundary is the same as everywhere else: this checks the program still behaves as
+recorded given the inputs that were recorded. It is not a claim that the world stayed
+the same, and it is not a substitute for running against a live model when what you
+changed is the prompt or the model.
+
+---
+
 ## Committing a failure
 
 A recording is only a regression test if it can leave the machine it was made on.
