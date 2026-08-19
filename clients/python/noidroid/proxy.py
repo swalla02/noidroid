@@ -24,6 +24,11 @@ response. **What it does not**: anything the agent does that is not that request
 files it writes, commands it runs, other services it calls. Those are invisible here,
 and a replay will not reproduce them.
 
+**A streamed response is buffered.** The whole thing is read before a single byte goes
+back, so the agent gets a complete answer rather than an incremental one. The content
+is identical and the recording is faithful; what changes is the timing, which for a
+long generation can be the difference between a progress bar and a client timeout.
+
 No TLS interception. The agent is pointed at a plain local address and the proxy makes
 the upstream call itself, so nothing has to trust a forged certificate.
 """
@@ -131,11 +136,23 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
+    # Anthropic and OpenAI between them use more than two verbs — files and batches
+    # are deleted, assistants are patched. An unhandled method would 501 here, which
+    # is a loud failure but a needless one.
     def do_POST(self):
         self._relay("POST")
 
     def do_GET(self):
         self._relay("GET")
+
+    def do_PUT(self):
+        self._relay("PUT")
+
+    def do_PATCH(self):
+        self._relay("PATCH")
+
+    def do_DELETE(self):
+        self._relay("DELETE")
 
 
 def _free_port() -> int:
@@ -161,13 +178,21 @@ def serve(upstream: str, command: list) -> int:
         environment[variable] = endpoint
     print(f"[noidroid.proxy] recording {upstream} via {endpoint}", file=sys.stderr)
 
+    # A command that cannot even start still has to close its trajectory: an
+    # unfinished one replays as truncated, which describes the recorder's crash
+    # rather than anything the agent did.
+    status = 127
+    detail = {}
     try:
         status = subprocess.call(command, env=environment)
+        detail = {"exit_code": status}
+    except OSError as failure:
+        detail = {"exit_code": status, "error": str(failure)}
+        print(f"[noidroid.proxy] could not run {command[0]}: {failure}", file=sys.stderr)
     finally:
         server.shutdown()
-
-    # The agent's own exit code is its verdict, so it becomes the outcome.
-    session.finish("success" if status == 0 else "failure", {"exit_code": status})
+        # The agent's own exit code is its verdict, so it becomes the outcome.
+        session.finish("success" if status == 0 else "failure", detail)
     return status
 
 

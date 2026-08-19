@@ -68,7 +68,9 @@ how the package version relates to `STEP_VERSION`, the on-disk object format.
   configured base URL, recorded and then replayed with the provider shut down.
   Unlike a trace exported from an observability tool, what is recorded is the request
   itself, which is what makes matching on replay meaningful rather than approximate.
-  It captures provider traffic only; pair it with `--watch` to record the files.
+  It captures provider traffic only; pair it with `--watch` to record the files. A
+  streamed response is buffered rather than passed through: same content, different
+  timing (#45).
 
 ### Fixed
 
