@@ -21,3 +21,6 @@ dist/
 *.swp
 .idea/
 .vscode/
+
+# Claude Code, personal overrides (the shared config is .claude/settings.json)
+.claude/settings.local.json
