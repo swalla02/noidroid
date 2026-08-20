@@ -10,7 +10,7 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
-use crate::error::Result;
+use crate::error::{Doing, Result};
 use crate::hash::Digest;
 use crate::model::{Tree, TreeEntry};
 use crate::store::Store;
@@ -121,12 +121,15 @@ fn collect(
     if !dir.exists() {
         return Ok(());
     }
-    let mut children: Vec<PathBuf> = fs::read_dir(dir)?
+    let mut children: Vec<PathBuf> = fs::read_dir(dir)
+        .doing(|| format!("listing {}", dir.display()))?
         .map(|e| e.map(|e| e.path()))
-        .collect::<std::result::Result<_, _>>()?;
+        .collect::<std::result::Result<_, _>>()
+        .doing(|| format!("reading the entries of {}", dir.display()))?;
     children.sort();
     for path in children {
-        let meta = fs::symlink_metadata(&path)?;
+        let meta =
+            fs::symlink_metadata(&path).doing(|| format!("inspecting {}", path.display()))?;
         if meta.file_type().is_symlink() {
             continue;
         }
@@ -145,7 +148,8 @@ fn collect(
                 .expect("child of root")
                 .to_string_lossy()
                 .replace('\\', "/");
-            let blob = store.put(&fs::read(&path)?)?;
+            let blob =
+                store.put(&fs::read(&path).doing(|| format!("reading {}", path.display()))?)?;
             let executable = meta.permissions().mode() & 0o111 != 0;
             out.push(TreeEntry {
                 path: rel,
@@ -182,7 +186,7 @@ pub fn materialize_with(
     ignores: &Ignores,
 ) -> Result<()> {
     let tree: Tree = store.get_json(digest)?;
-    fs::create_dir_all(dir)?;
+    fs::create_dir_all(dir).doing(|| format!("creating {}", dir.display()))?;
 
     // `ignores` applies to the recorded entries as well as to what is already on
     // disk. A tree can hold paths that are deliberately not files -- `.world/`, which
@@ -200,10 +204,12 @@ pub fn materialize_with(
     for entry in entries {
         let path = dir.join(&entry.path);
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
+            fs::create_dir_all(parent).doing(|| format!("creating {}", parent.display()))?;
         }
-        fs::write(&path, store.get(&entry.blob)?)?;
-        fs::set_permissions(&path, fs::Permissions::from_mode(entry.mode))?;
+        fs::write(&path, store.get(&entry.blob)?)
+            .doing(|| format!("restoring {}", path.display()))?;
+        fs::set_permissions(&path, fs::Permissions::from_mode(entry.mode))
+            .doing(|| format!("setting the mode of {}", path.display()))?;
     }
     Ok(())
 }
@@ -212,8 +218,10 @@ pub fn materialize_with(
 /// in place. Returns whether the directory ended up empty.
 fn prune(dir: &Path, wanted: &BTreeSet<PathBuf>, ignores: &Ignores) -> Result<bool> {
     let mut empty = true;
-    for entry in fs::read_dir(dir)? {
-        let path = entry?.path();
+    for entry in fs::read_dir(dir).doing(|| format!("listing {} to prune it", dir.display()))? {
+        let path = entry
+            .doing(|| format!("reading an entry of {}", dir.display()))?
+            .path();
         if path
             .file_name()
             .and_then(|n| n.to_str())
@@ -223,17 +231,18 @@ fn prune(dir: &Path, wanted: &BTreeSet<PathBuf>, ignores: &Ignores) -> Result<bo
             empty = false;
             continue;
         }
-        let meta = fs::symlink_metadata(&path)?;
+        let meta = fs::symlink_metadata(&path)
+            .doing(|| format!("inspecting {} before pruning it", path.display()))?;
         if meta.is_dir() && !meta.file_type().is_symlink() {
             if prune(&path, wanted, ignores)? {
-                fs::remove_dir(&path)?;
+                fs::remove_dir(&path).doing(|| format!("removing {}", path.display()))?;
             } else {
                 empty = false;
             }
         } else if wanted.contains(&path) {
             empty = false;
         } else {
-            fs::remove_file(&path)?;
+            fs::remove_file(&path).doing(|| format!("removing {}", path.display()))?;
         }
     }
     Ok(empty)

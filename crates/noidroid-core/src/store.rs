@@ -8,11 +8,12 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
-use crate::error::{Error, Result};
+use crate::error::{Doing, Error, Result};
 use crate::hash::Digest;
 
 pub struct Store {
@@ -22,7 +23,7 @@ pub struct Store {
 impl Store {
     pub fn open(root: impl Into<PathBuf>) -> Result<Store> {
         let root = root.into();
-        fs::create_dir_all(&root)?;
+        fs::create_dir_all(&root).doing(|| format!("creating the store {}", root.display()))?;
         Ok(Store { root })
     }
 
@@ -39,15 +40,37 @@ impl Store {
         if path.exists() {
             return Ok(digest);
         }
-        fs::create_dir_all(path.parent().expect("object path has a parent"))?;
+        fs::create_dir_all(path.parent().expect("object path has a parent"))
+            .doing(|| format!("creating the object directory for {}", digest.short()))?;
         // Write to a temporary name and rename, so a crash can never leave a
         // half-written object sitting at a valid address.
-        let tmp = path.with_extension("tmp");
-        let mut f = fs::File::create(&tmp)?;
-        f.write_all(bytes)?;
-        f.sync_all()?;
+        //
+        // The scratch name has to be unique to the writer, not to the object. An
+        // address *is* its content, so two writers racing on one object is the normal
+        // case rather than the exotic one -- and a shared scratch name turns that into
+        // one writer renaming the file the other is still holding. The loser's rename
+        // then fails with a bare `NotFound` that names neither the object nor the
+        // operation. It still ends in `.tmp`, which is what `verify` skips on.
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let tmp = path.with_extension(format!(
+            "{}-{}.tmp",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        let mut f = fs::File::create(&tmp)
+            .doing(|| format!("creating the scratch file {}", tmp.display()))?;
+        f.write_all(bytes)
+            .doing(|| format!("writing {} bytes to {}", bytes.len(), tmp.display()))?;
+        f.sync_all()
+            .doing(|| format!("flushing {}", tmp.display()))?;
         drop(f);
-        fs::rename(&tmp, &path)?;
+        fs::rename(&tmp, &path).doing(|| {
+            format!(
+                "moving {} into place as object {}",
+                tmp.display(),
+                digest.short()
+            )
+        })?;
         Ok(digest)
     }
 
@@ -56,7 +79,7 @@ impl Store {
         if !path.exists() {
             return Err(Error::NotFound(format!("object {}", digest.short())));
         }
-        let bytes = fs::read(path)?;
+        let bytes = fs::read(&path).doing(|| format!("reading object {}", path.display()))?;
         let actual = Digest::of(&bytes);
         if &actual != digest {
             return Err(Error::Corrupt {
@@ -106,7 +129,8 @@ impl Store {
                     continue;
                 }
                 let named = Digest::from_hex(format!("{prefix}{rest}"));
-                let bytes = fs::read(&object)?;
+                let bytes =
+                    fs::read(&object).doing(|| format!("reading object {}", object.display()))?;
                 if Digest::of(&bytes) != named {
                     bad.push(named.to_string());
                 }
@@ -124,8 +148,12 @@ impl Store {
 
 fn sorted_dir(path: &Path) -> Result<Vec<PathBuf>> {
     let mut out: BTreeSet<PathBuf> = BTreeSet::new();
-    for entry in fs::read_dir(path)? {
-        out.insert(entry?.path());
+    for entry in fs::read_dir(path).doing(|| format!("listing {}", path.display()))? {
+        out.insert(
+            entry
+                .doing(|| format!("reading an entry of {}", path.display()))?
+                .path(),
+        );
     }
     Ok(out.into_iter().collect())
 }
@@ -155,6 +183,62 @@ mod tests {
         let b = store.put(b"hello").unwrap();
         assert_eq!(a, b);
         assert_eq!(store.object_count().unwrap(), 1);
+        fs::remove_dir_all(dir).ok();
+    }
+
+    /// Two writers storing the same bytes at the same moment is not a race the
+    /// caller can avoid: the address is the content, so identical content is exactly
+    /// what concurrent writers produce. Naming the scratch file after the object made
+    /// them collide — one writer's rename moved the file the other was about to
+    /// rename, and the loser got a bare `NotFound` naming nothing.
+    #[test]
+    fn two_writers_of_the_same_object_do_not_collide() {
+        let dir = tmp();
+        let store = Store::open(dir.join("objects")).unwrap();
+        let payload = vec![b'x'; 64 * 1024];
+
+        for round in 0..64 {
+            let store = &store;
+            let payload = &payload;
+            let bytes: Vec<u8> = payload
+                .iter()
+                .copied()
+                .chain(round.to_string().bytes())
+                .collect();
+            let start = std::sync::Barrier::new(8);
+            std::thread::scope(|s| {
+                for _ in 0..8 {
+                    s.spawn(|| {
+                        start.wait();
+                        store.put(&bytes).expect("a concurrent write must not fail");
+                    });
+                }
+            });
+        }
+
+        assert_eq!(store.object_count().unwrap(), 64);
+        fs::remove_dir_all(dir).ok();
+    }
+
+    /// #42 gave I/O failures a `doing`; the object store was never wired into it, so
+    /// a store failure still surfaced as a bare errno naming nothing. `NotFound` is
+    /// the verdict for a missing object, a missing shard and a scratch file that lost
+    /// a race, and a CI log that prints only the errno costs a day.
+    #[test]
+    fn a_store_failure_says_what_it_was_doing() {
+        let dir = tmp();
+        let blocked = dir.join("not-a-directory");
+        fs::write(&blocked, b"x").unwrap();
+
+        let err = match Store::open(blocked.join("objects")) {
+            Err(e) => e,
+            Ok(_) => panic!("a file is not a store"),
+        };
+        let said = err.to_string();
+        assert!(
+            said.contains("creating the store") && said.contains("objects"),
+            "a store failure must name the operation and the path, said: {said}"
+        );
         fs::remove_dir_all(dir).ok();
     }
 

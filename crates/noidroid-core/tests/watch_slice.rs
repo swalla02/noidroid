@@ -9,6 +9,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use noidroid_core::engine::{self, Mode, RunSpec};
 use noidroid_core::{tree, Repo};
@@ -35,13 +36,20 @@ struct Project {
 
 impl Project {
     fn new() -> Project {
+        // The counter is the point. `cargo test` runs these two tests in parallel
+        // threads of one process, so pid and clock are shared, and two fixtures that
+        // land on the same tick share a directory -- and therefore a store, and a
+        // `Drop` that deletes it out from under the other. The engine defends its
+        // socket names the same way, for the same reason.
+        static SEQ: AtomicU64 = AtomicU64::new(0);
         let dir = std::env::temp_dir().join(format!(
-            "noidroid-watch-{}-{}",
+            "noidroid-watch-{}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
         ));
         fs::create_dir_all(dir.join("src")).unwrap();
         // The things a real project is full of and a recording must not carry.
