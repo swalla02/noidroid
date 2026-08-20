@@ -328,6 +328,43 @@ step and calling it the cause.
 
 ---
 
+## What the exploring cost
+
+"They cost nothing" is a claim, so it is one the tool has to be able to show.
+
+```console
+$ noidroid cost --price 'fake-model-1=3/15'
+COST
+run-1              180 in / 24 out spent    $0.0009
+alt-1              0 in / 0 out spent       $0.00      — served from the recording
+```
+
+Token counts come out of the responses the recording already holds — they are read
+back, not estimated. Whether a token was *bought* is the step's delivery, which is
+recorded too: a branch whose model call sits in the shared prefix executes nothing,
+so it buys nothing.
+
+A price is not a recorded fact, and there is no built-in price list. Ask for one
+trajectory and, unless you supply the price, you get tokens and a reason:
+
+```console
+$ noidroid cost run-1
+COST run-1
+  model calls            1 executed
+  tokens spent           180 in / 24 out
+
+  cost: 180 in / 24 out spent. Money is not reported: no price was supplied for fake-model-1.
+        a price this tool invented would read exactly like one it measured
+        noidroid cost run-1 --price 'fake-model-1=<in>/<out>'   (US dollars per million tokens)
+```
+
+`$0.00` is the one figure that needs no price, because zero tokens cost nothing at
+every price there is. An imported bundle carries content but not per-run notes, so it
+cannot say how its calls were delivered — and it says that, rather than totalling to
+zero.
+
+---
+
 ## Rewinding the files, not the conversation
 
 The most-requested thing on coding-agent trackers is not undoing the chat — it is
@@ -429,6 +466,7 @@ noidroid diff run-1 alt-1
 | `noidroid checkout <traj>@<step> <dir>` | write out the workspace as it was |
 | `noidroid run --proxy -- <cmd>` | record an agent you did not write, in any language |
 | `noidroid bisect <traj>` | find which decision, changed, would have flipped the outcome |
+| `noidroid cost [<traj>]` | add up what the model calls used, and what was bought |
 | `noidroid restore <traj>@<step>` | put the files back as they were, keeping a way out |
 | `noidroid export` · `import` | move a trajectory between machines, as one committable file |
 | `noidroid tree` · `diff` · `verify` | the branch graph, a comparison, a store integrity check |
