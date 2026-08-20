@@ -40,6 +40,12 @@ branch_for() {  # an existing branch for this issue wins, so a resumed session l
     | sed 's|^origin/||' | sort -u | grep -E "^[a-z]+/${n}-" | head -1 || true)
   if [ -n "$existing" ]; then echo "$existing"; return; fi
 
+  # A branch named before this convention existed is still that issue's branch, and
+  # the open PR that closes the issue is the only thing that knows which one it is.
+  existing=$(gh pr list --state open --json headRefName,body \
+    -q ".[] | select(.body | test(\"[Cc]loses #${n}\\\\b\")) | .headRefName" | head -1 || true)
+  if [ -n "$existing" ]; then echo "$existing"; return; fi
+
   local title labels
   title=$(gh issue view "$n" --json title -q .title) || die "no issue #$n"
   labels=$(gh issue view "$n" --json labels -q '[.labels[].name] | join(" ")')
