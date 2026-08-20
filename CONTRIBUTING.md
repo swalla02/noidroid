@@ -14,7 +14,7 @@ nobody can read back in six months.
 
 ```bash
 gh issue create                             # the problem, and why it is one
-git switch -c fix/25-egress-fence           # <type>/<issue-number>-<slug>
+.claude/scripts/issue-worktree.sh start 25  # a worktree of its own; cd to what it prints
 cargo test --all                            # browser tests skip without Chromium
 cargo fmt --all && cargo clippy --all-targets -- -D warnings
 git commit                                  # Conventional Commits, see below
@@ -22,15 +22,23 @@ gh pr create                                # body must contain "Closes #25"
                                             # then: review, then merge
 ```
 
-Four rules, and CI enforces the third:
+Four rules, and two of them are enforced for you:
 
 1. **A bug or a feature becomes an issue first.** Including one found by a research
    pass — especially then, because that is the reasoning most easily lost.
-2. **An issue gets its own branch**, named `<type>/<issue-number>-<slug>`.
+2. **An issue gets its own worktree, and its own session.** One issue is worked in
+   `../noidroid-worktrees/<issue>` on `<type>/<issue-number>-<slug>`, and nothing else
+   touches that tree — two sessions sharing one checkout overwrite each other's
+   half-finished edits. The primary checkout is read-only; a `PreToolUse` hook denies
+   edits there. See [.claude/README.md](.claude/README.md).
 3. **A branch becomes a pull request that closes its issue.** The `Issue link` check
    fails a PR whose body has no `Closes #N`. Dependabot is exempt; nothing else is.
 4. **A pull request is reviewed before it merges.** Green CI is not a review — it
    says the code runs, not that it should exist or that it is the right shape.
+
+When the issue closes, retire its worktree: `.claude/scripts/issue-worktree.sh done
+<issue>`, or `prune` for every closed issue at once. A worktree left behind is a stale
+claim on a branch name.
 
 `main` is protected: it takes merges through pull requests, and CI has to be green.
 Nobody pushes to it directly, including maintainers.
