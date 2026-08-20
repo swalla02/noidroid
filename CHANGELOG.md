@@ -7,6 +7,19 @@ how the package version relates to `STEP_VERSION`, the on-disk object format.
 
 ## [Unreleased]
 
+### Added
+
+- **The ways a world fails, named.** `noidroid branch --inject <kind>` writes the
+  intervention for you: `timeout`, `server-error`, `rate-limited`, `unauthorized`,
+  `malformed`, `empty`. Writing the payload by hand is the difference between a thing
+  people do and a thing people mean to. The first four raise where a client would
+  raise, and an agent with a `try` around the call survives them; `malformed` and
+  `empty` raise nothing at all, which is the case worth branching. An agent that does
+  not validate a tool result cannot tell a broken answer from a true one — the flight
+  example reports seventeen characters of unterminated JSON as seventeen flights, out
+  loud, before anything goes wrong. The presets themselves shipped inside 0.3.0
+  unannounced and with no test; they now have both. (#35)
+
 ### Changed
 
 - **A divergence report now names an insertion, not just the fields that differ.** It
@@ -20,6 +33,11 @@ how the package version relates to `STEP_VERSION`, the on-disk object format.
 
 ### Fixed
 
+- **`--inject all` was in the help and never in the binary.** It promised to branch
+  every failure in turn and refused the moment anyone tried it. The help now names
+  only what works, and a test through the real binary keeps it that way — a tool whose
+  own `--help` overstates it is the same failure as a trajectory that looks real,
+  scaled down. (#35)
 - **Two writers of the same object raced, and the loser said only `No such file or
   directory`.** `Store::put` wrote through a scratch file named after the object, so
   concurrent writers of identical bytes — which is the normal case in a

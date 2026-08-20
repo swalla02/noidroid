@@ -151,6 +151,34 @@ $ noidroid diff run-1 alt-fl203
   workspace        + booking.json
 ```
 
+### Naming the ways it fails
+
+`--decide` and `--result` ask what the world could have said instead. `--inject <kind>`
+asks what happens when it goes wrong, and writes the payload for you: `timeout`,
+`server-error`, `rate-limited`, `unauthorized`, `malformed`, `empty`.
+
+```console
+$ noidroid branch run-1@1 --inject malformed
+
+│ found 17 flights under 800
+
+branched run-1~malformed-1 from run-1@1
+  intervention replace-result "{\"unterminated\": "
+  failure      malformed the answer was not the shape it should be
+  prefix       1 step(s) shared with run-1 — identical objects, stored once
+
+    0 ● genesis                                  real      replayed   a7df183d1f
+    1 ◆ call flights.search({"max_price":800})   simulated intervened eb3d4642f5
+```
+
+`malformed` and `empty` are why this exists. A timeout or a 429 raises where a client
+would raise, and any agent with a `try` around the call already handles them. These two
+raise nothing at all: the call returns, and an agent that does not validate its tool
+results carries the answer straight into what it does next. Above, seventeen characters
+of broken JSON were reported as seventeen flights, out loud and with confidence, before
+anything went wrong. As with every intervention the value is `simulated`, so nothing
+downstream of it may claim otherwise.
+
 ---
 
 ## The same thing in a real browser
@@ -397,7 +425,7 @@ noidroid diff run-1 alt-1
 | `noidroid log [<traj>]` | list trajectories, or show one as a timeline |
 | `noidroid show <traj>@<step>` | inspect a checkpoint and how to explore from it |
 | `noidroid replay <traj>` | re-derive a trajectory and check it still hashes the same |
-| `noidroid branch <traj>@<step>` | diverge: `--decide`, `--result` or `--fail` |
+| `noidroid branch <traj>@<step>` | diverge: `--decide`, `--result`, `--fail` or `--inject` |
 | `noidroid checkout <traj>@<step> <dir>` | write out the workspace as it was |
 | `noidroid run --proxy -- <cmd>` | record an agent you did not write, in any language |
 | `noidroid bisect <traj>` | find which decision, changed, would have flipped the outcome |
