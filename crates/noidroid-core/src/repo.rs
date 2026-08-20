@@ -8,7 +8,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::error::{Error, Result};
+use crate::error::{Doing, Error, Result};
 use crate::hash::Digest;
 use crate::model::{Step, StepNote, Trajectory};
 use crate::store::Store;
@@ -32,7 +32,8 @@ impl Repo {
             "logs",
             "tmp",
         ] {
-            fs::create_dir_all(root.join(sub))?;
+            fs::create_dir_all(root.join(sub))
+                .doing(|| format!("creating {}", root.join(sub).display()))?;
         }
         let store = Store::open(root.join("objects"))?;
         Ok(Repo { root, store })
@@ -72,7 +73,9 @@ impl Repo {
     }
 
     pub fn save_trajectory(&self, t: &Trajectory) -> Result<()> {
-        fs::write(self.trajectory_path(&t.name), serde_json::to_vec_pretty(t)?)?;
+        let path = self.trajectory_path(&t.name);
+        fs::write(&path, serde_json::to_vec_pretty(t)?)
+            .doing(|| format!("writing the trajectory {}", path.display()))?;
         Ok(())
     }
 
@@ -81,7 +84,9 @@ impl Repo {
         if !path.exists() {
             return Err(Error::NotFound(format!("trajectory '{name}'")));
         }
-        Ok(serde_json::from_slice(&fs::read(path)?)?)
+        let bytes =
+            fs::read(&path).doing(|| format!("reading the trajectory {}", path.display()))?;
+        Ok(serde_json::from_slice(&bytes)?)
     }
 
     pub fn has_trajectory(&self, name: &str) -> bool {
@@ -92,7 +97,7 @@ impl Repo {
         let dir = self.root.join("trajectories");
         let mut names: Vec<String> = Vec::new();
         if dir.exists() {
-            for entry in fs::read_dir(&dir)? {
+            for entry in fs::read_dir(&dir).doing(|| format!("listing {}", dir.display()))? {
                 let path = entry?.path();
                 if path.extension().and_then(|s| s.to_str()) == Some("json") {
                     if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
@@ -111,7 +116,9 @@ impl Repo {
     }
 
     pub fn save_notes(&self, name: &str, notes: &[StepNote]) -> Result<()> {
-        fs::write(self.notes_path(name), serde_json::to_vec_pretty(notes)?)?;
+        let path = self.notes_path(name);
+        fs::write(&path, serde_json::to_vec_pretty(notes)?)
+            .doing(|| format!("writing the notes {}", path.display()))?;
         Ok(())
     }
 
@@ -120,7 +127,8 @@ impl Repo {
         if !path.exists() {
             return Ok(Vec::new());
         }
-        Ok(serde_json::from_slice(&fs::read(path)?)?)
+        let bytes = fs::read(&path).doing(|| format!("reading the notes {}", path.display()))?;
+        Ok(serde_json::from_slice(&bytes)?)
     }
 
     /// Materialise a trajectory's steps in execution order by walking parents from

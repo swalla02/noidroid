@@ -7,6 +7,20 @@ how the package version relates to `STEP_VERSION`, the on-disk object format.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Two writers of the same object raced, and the loser said only `No such file or
+  directory`.** `Store::put` wrote through a scratch file named after the object, so
+  concurrent writers of identical bytes — which is the normal case in a
+  content-addressed store, not the exotic one — shared one scratch path. Whichever
+  renamed first moved the file out from under the other. The scratch name is now
+  unique to the writer. (#44)
+- **The object store and the tree walker never got the context #42 introduced.** A
+  failure reading, writing, listing or pruning now names the operation and the path,
+  so a `NotFound` in CI says which file it could not find. This is what made the macOS
+  failure in #44 unreadable for two runs. (#44)
+
+
 ## [0.3.0] - 2026-08-19
 
 *The laws of the Stand.* This release adds almost no functionality. It makes the
