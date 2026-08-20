@@ -451,8 +451,9 @@ so a replay matches on what was sent rather than on a lossy summary of it.
 
 It captures the provider traffic and nothing else: files the agent writes, commands it
 runs and other services it calls are invisible to it. Pair it with `--watch` to record
-the files too. A streamed response is buffered rather than passed through — the content
-is identical, the timing is not.
+the files too. A server-sent event stream is passed through as it arrives, so an agent
+under recording sees its tokens on the same schedule as one that is not; everything
+else is still read in full before it is written back.
 
 ### What neither can do
 
