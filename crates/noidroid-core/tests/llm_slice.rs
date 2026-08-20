@@ -149,8 +149,13 @@ fn replaying_an_agent_never_calls_the_model() {
         .trajectory
         .unwrap();
 
-    let report = engine::run(&f.repo, &f.spec(None), Mode::Replay, Some(&recorded))
-        .expect("replay should run to completion");
+    let report = engine::run(
+        &f.repo,
+        &f.spec(None),
+        Mode::Replay { live: Vec::new() },
+        Some(&recorded),
+    )
+    .expect("replay should run to completion");
 
     assert!(report.faithful(), "{:?}", report.divergences);
     // Every step was served from the recording. Nothing was executed, so nothing was

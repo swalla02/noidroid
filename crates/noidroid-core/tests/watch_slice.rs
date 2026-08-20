@@ -165,8 +165,13 @@ fn a_reconstruction_never_touches_the_watched_directory() {
 
     let mut spec = project.spec();
     spec.name = None;
-    let report = engine::run(&project.repo, &spec, Mode::Replay, Some(&recorded))
-        .expect("replay should run to completion");
+    let report = engine::run(
+        &project.repo,
+        &spec,
+        Mode::Replay { live: Vec::new() },
+        Some(&recorded),
+    )
+    .expect("replay should run to completion");
     assert!(report.faithful(), "{:?}", report.divergences);
 
     // A replay re-executes the program, which writes files. It must do that in its

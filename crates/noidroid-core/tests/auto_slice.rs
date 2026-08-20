@@ -196,8 +196,13 @@ fn a_program_with_no_noidroid_code_records_and_replays() {
     // 2. Take the API away. Anything that still works came out of the recording.
     api.stop();
 
-    let report = engine::run(&repo, &spec(None), Mode::Replay, Some(&recorded))
-        .expect("replay should run to completion");
+    let report = engine::run(
+        &repo,
+        &spec(None),
+        Mode::Replay { live: Vec::new() },
+        Some(&recorded),
+    )
+    .expect("replay should run to completion");
     assert!(
         report.faithful(),
         "an uninstrumented program should replay exactly: {:?}",
@@ -286,8 +291,13 @@ fn a_capture_gap_stops_the_recording_unless_it_is_allowed() {
 
     let mut replay = spec("unused", true);
     replay.name = None;
-    let report = engine::run(&repo, &replay, Mode::Replay, Some(&allowed))
-        .expect("replay should run to completion");
+    let report = engine::run(
+        &repo,
+        &replay,
+        Mode::Replay { live: Vec::new() },
+        Some(&allowed),
+    )
+    .expect("replay should run to completion");
     assert!(report.faithful(), "{:?}", report.divergences);
 
     let _ = fs::remove_dir_all(&dir);

@@ -146,6 +146,19 @@ No migration.
   have produced bogus divergences rather than an honest refusal.
 - `_PassThrough.call` did not accept `volatile=`, so a program using it raised
   `TypeError` when run *without* noidroid — defeating the point of the pass-through.
+- **`noidroid replay <traj> --live <target>`** — re-run part of a recording for real.
+  A plain replay is the wrong instrument when the thing you changed is upstream of the
+  recording, such as a prompt or a model: a published study forking live trajectories
+  after a model swap found only about 3% of replayed states remained valid. So the
+  operator names what should be new — `--live model` covers every `model.*` call — and
+  the tools, network and clock still come from the recording, so exactly one thing
+  changed and the comparison means something.
+  Everything before the first live call still reproduces and is verified. Everything
+  after is `live`, and a call the run still makes in the same order is still served
+  from the recording, so it keeps its grip for as long as it tracks and only executes
+  what the recording genuinely cannot answer. The result is kept as its own trajectory,
+  because comparing it against its recording is the whole point, and it is never
+  called faithful — part of it was asked to be new.
 
 ## [0.2.0] - 2026-08-19
 

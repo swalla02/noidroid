@@ -277,7 +277,12 @@ impl<'a> App<'a> {
             auto: false,
             watch: None,
         };
-        match engine::run(self.repo, &spec, Mode::Replay, Some(&t)) {
+        match engine::run(
+            self.repo,
+            &spec,
+            Mode::Replay { live: Vec::new() },
+            Some(&t),
+        ) {
             Ok(report) if report.faithful() => {
                 self.flash = FLASH_FRAMES;
                 self.note = Some(Note::Good(format!(

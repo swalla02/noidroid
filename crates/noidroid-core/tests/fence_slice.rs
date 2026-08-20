@@ -87,8 +87,13 @@ fn a_replay_that_reaches_the_network_is_caught_and_explained() {
 
     // Same program, now doing something nobody mediated. Before the fence this
     // reached the network and the replay still called itself faithful.
-    let report = engine::run(&f.repo, &f.spec(None, true), Mode::Replay, Some(&recorded))
-        .expect("replay should run to completion");
+    let report = engine::run(
+        &f.repo,
+        &f.spec(None, true),
+        Mode::Replay { live: Vec::new() },
+        Some(&recorded),
+    )
+    .expect("replay should run to completion");
 
     assert!(
         !report.faithful(),
@@ -113,8 +118,13 @@ fn the_fence_does_not_get_in_the_way_of_an_honest_replay() {
 
     // The engine's own socket is a Unix socket and loopback stays open, so a replay
     // that only talks to us is unaffected.
-    let report = engine::run(&f.repo, &f.spec(None, false), Mode::Replay, Some(&recorded))
-        .expect("replay should run to completion");
+    let report = engine::run(
+        &f.repo,
+        &f.spec(None, false),
+        Mode::Replay { live: Vec::new() },
+        Some(&recorded),
+    )
+    .expect("replay should run to completion");
     assert!(report.faithful(), "{:?}", report.divergences);
     assert!(report.last_words.is_none(), "nothing went wrong to report");
 }

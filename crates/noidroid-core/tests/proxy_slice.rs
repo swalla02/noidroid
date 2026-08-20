@@ -188,8 +188,13 @@ fn an_agent_that_knows_nothing_about_us_records_and_replays() {
     // Take the provider away.
     provider.stop();
 
-    let report = engine::run(&repo, &spec(None), Mode::Replay, Some(&recorded))
-        .expect("replay should run to completion");
+    let report = engine::run(
+        &repo,
+        &spec(None),
+        Mode::Replay { live: Vec::new() },
+        Some(&recorded),
+    )
+    .expect("replay should run to completion");
     assert!(report.faithful(), "{:?}", report.divergences);
     assert_eq!(
         report.delivery.get("executed").copied().unwrap_or(0),

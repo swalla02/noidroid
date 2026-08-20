@@ -80,8 +80,13 @@ impl Fixture {
     }
 
     fn replay(&self, t: &Trajectory) -> Report {
-        engine::run(&self.repo, &self.spec(None, false), Mode::Replay, Some(t))
-            .expect("replay runs to completion")
+        engine::run(
+            &self.repo,
+            &self.spec(None, false),
+            Mode::Replay { live: Vec::new() },
+            Some(t),
+        )
+        .expect("replay runs to completion")
     }
 
     fn branch(

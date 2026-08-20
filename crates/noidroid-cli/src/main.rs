@@ -76,7 +76,17 @@ enum Command {
         reference: String,
     },
     /// Re-derive a recorded trajectory and check it still hashes the same.
-    Replay { trajectory: String },
+    Replay {
+        trajectory: String,
+        /// Execute these targets for real instead of serving them from the recording
+        /// — `--live model` covers every `model.*` call. Tools, network and clock
+        /// still come from the recording, so only the named part is new.
+        #[arg(long, value_name = "TARGET")]
+        live: Vec<String>,
+        /// Name for the trajectory a live replay produces.
+        #[arg(long)]
+        label: Option<String>,
+    },
     /// Explore from a checkpoint by deliberately doing something else.
     Branch {
         /// `<trajectory>@<step>` — the step at which to diverge.
@@ -221,7 +231,11 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
         ),
         Command::Log { trajectory } => cmd_log(&repo, trajectory),
         Command::Show { reference } => cmd_show(&repo, &reference),
-        Command::Replay { trajectory } => cmd_replay(&repo, &cwd, &trajectory),
+        Command::Replay {
+            trajectory,
+            live,
+            label,
+        } => cmd_replay(&repo, &cwd, &trajectory, live, label),
         Command::Branch {
             reference,
             label,
@@ -562,12 +576,25 @@ fn cmd_show(repo: &Repo, reference: &str) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-fn cmd_replay(repo: &Repo, cwd: &Path, name: &str) -> Result<ExitCode> {
+fn cmd_replay(
+    repo: &Repo,
+    cwd: &Path,
+    name: &str,
+    live: Vec<String>,
+    label: Option<String>,
+) -> Result<ExitCode> {
     let t = repo.load_trajectory(name)?;
+    // A live replay produces a genuinely different run, so it is kept: comparing it
+    // against the recording it came from is the entire point.
+    let keep = if live.is_empty() {
+        None
+    } else {
+        Some(label.unwrap_or_else(|| repo.next_name(&format!("{name}~live"))))
+    };
     let spec = RunSpec {
         command: t.command.clone(),
         launch_dir: cwd.to_path_buf(),
-        name: None,
+        name: keep,
         env: if t.auto {
             auto_capture_env_with(t.allow_gaps)?
         } else {
@@ -576,8 +603,18 @@ fn cmd_replay(repo: &Repo, cwd: &Path, name: &str) -> Result<ExitCode> {
         auto: t.auto,
         watch: None,
     };
-    let report = engine::run(repo, &spec, Mode::Replay, Some(&t))?;
-    println!("{} {}", shell("REPLAY"), name);
+    let live_targets = live.clone();
+    let report = engine::run(repo, &spec, Mode::Replay { live }, Some(&t))?;
+    println!(
+        "{} {}{}",
+        shell("REPLAY"),
+        name,
+        if live_targets.is_empty() {
+            String::new()
+        } else {
+            dim(&format!("  live: {}", live_targets.join(", ")))
+        }
+    );
     println!(
         "  {:<22} {}",
         dim("steps re-derived"),
@@ -603,6 +640,23 @@ fn cmd_replay(repo: &Repo, cwd: &Path, name: &str) -> Result<ExitCode> {
         dim("(mediated effects are never re-executed during replay)")
     );
     print_census(&report);
+    if !live_targets.is_empty() {
+        // Calling this "faithful" would be a lie: part of it was asked to be new, so
+        // what happened is a comparison, not a reproduction.
+        println!(
+            "\n  {} up to the first live call this reproduced exactly; \
+             everything after it is new",
+            ink_provenance("live")
+        );
+        if let Some(made) = report.trajectory.as_ref() {
+            println!("    noidroid diff {name} {}", made.name);
+        }
+        return Ok(if report.divergences.is_empty() {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::from(1)
+        });
+    }
     if report.divergences.is_empty() {
         println!(
             "\n  {} the reconstruction addresses the same objects as the recording",

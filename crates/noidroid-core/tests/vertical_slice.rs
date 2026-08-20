@@ -132,8 +132,13 @@ impl Fixture {
     }
 
     fn replay(&self, t: &Trajectory, extra: &[(&str, &str)]) -> Report {
-        engine::run(&self.repo, &self.spec(None, extra), Mode::Replay, Some(t))
-            .expect("replay should run to completion")
+        engine::run(
+            &self.repo,
+            &self.spec(None, extra),
+            Mode::Replay { live: Vec::new() },
+            Some(t),
+        )
+        .expect("replay should run to completion")
     }
 
     fn witness_lines(&self) -> Vec<String> {
@@ -621,4 +626,62 @@ fn an_io_failure_says_what_it_was_doing() {
     );
 
     let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_live_replay_reruns_only_what_it_was_asked_to() {
+    let f = Fixture::new("hybrid");
+    let recorded = f.record();
+    let after_recording = f.witness_lines();
+    assert!(after_recording.contains(&"read".to_string()));
+    assert!(after_recording.contains(&"stage".to_string()));
+
+    // Re-run the read for real; everything else should still come from the recording.
+    // This is what keeps a recording useful once the thing you changed is upstream of
+    // it — the model, the prompt — without turning the whole run into a fresh one.
+    let mut spec = f.spec(Some("live-1"), &[]);
+    spec.name = Some("live-1".into());
+    let report = engine::run(
+        &f.repo,
+        &spec,
+        Mode::Replay {
+            live: vec!["world.read".into()],
+        },
+        Some(&recorded),
+    )
+    .expect("a live replay should run to completion");
+
+    let performed = f.witness_lines();
+    let extra: Vec<&String> = performed[after_recording.len()..].iter().collect();
+    assert_eq!(
+        extra,
+        vec![&"read".to_string()],
+        "only the target named --live may be executed again, got {extra:?}"
+    );
+
+    // The prefix before the live call still reproduced exactly.
+    assert!(
+        report.expected > 0 && report.reproduced == report.expected,
+        "the part before the first live call must still be verified: {:?}",
+        report.divergences
+    );
+
+    // And it is kept, because comparing it with the recording is the whole point.
+    let produced = report
+        .trajectory
+        .expect("a live replay produces a trajectory");
+    let chain = f.repo.chain(&produced).unwrap();
+    let live_step = chain
+        .iter()
+        .find(|(_, s)| matches!(&s.action, Action::Call { target, .. } if target == "world.read"))
+        .expect("the live call is a step");
+    assert_eq!(live_step.1.effects[0].provenance, Provenance::Live);
+    assert_eq!(
+        chain.last().unwrap().1.provenance,
+        Provenance::Live,
+        "live never improves back to real downstream"
+    );
+
+    // The recording it came from is untouched.
+    assert_eq!(f.repo.load_trajectory("run-1").unwrap(), recorded);
 }
