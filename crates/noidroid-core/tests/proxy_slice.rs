@@ -11,9 +11,11 @@
 //! anything that still works came out of the recording.
 
 use std::fs;
+use std::io::{BufRead, BufReader};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, ChildStdout, Command, Stdio};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use noidroid_core::engine::{self, Mode, RunSpec};
@@ -21,18 +23,12 @@ use noidroid_core::intact::Reading;
 use noidroid_core::model::EffectOutcome;
 use noidroid_core::Repo;
 
-const PORT: u16 = 8791;
-const STREAM_PORT: u16 = 8792;
-const GZIP_PORT: u16 = 8793;
-const OPAQUE_PORT: u16 = 8794;
-const LEGACY_GZIP_PORT: u16 = 8795;
-
 /// The replacement character. Its presence in a recorded body means bytes were
 /// dropped on the way in and nothing said so.
 const LOST: char = '\u{fffd}';
 
 const PROVIDER: &str = r#"
-import json, sys
+import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 class Handler(BaseHTTPRequestHandler):
@@ -50,13 +46,15 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-ThreadingHTTPServer(("127.0.0.1", int(sys.argv[1])), Handler).serve_forever()
+server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+print(server.server_address[1], flush=True)
+server.serve_forever()
 "#;
 
 /// Emits a message stream the way a provider does: an event, a pause, another event.
 /// The pauses are the point — a proxy that buffers collapses them all to the end.
 const STREAMING_PROVIDER: &str = r#"
-import json, sys, time
+import json, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 DELTAS = ["one ", "two ", "three ", "four ", "five ", "six"]
@@ -97,7 +95,9 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(b"0\r\n\r\n")
         self.wfile.flush()
 
-ThreadingHTTPServer(("127.0.0.1", int(sys.argv[1])), Handler).serve_forever()
+server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+print(server.server_address[1], flush=True)
+server.serve_forever()
 "#;
 
 /// Writes down *when* each token turned up, not just what it was. Same as the other
@@ -133,7 +133,7 @@ with open(os.environ["ARRIVALS_PATH"], "w", encoding="utf-8") as handle:
 /// the first time a provider changes its mind. It also reports back what it was
 /// asked for, so the recording shows which codings the proxy put its name to.
 const GZIP_PROVIDER: &str = r#"
-import gzip, json, sys
+import gzip, json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 class Handler(BaseHTTPRequestHandler):
@@ -154,14 +154,15 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-ThreadingHTTPServer(("127.0.0.1", int(sys.argv[1])), Handler).serve_forever()
+server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+print(server.server_address[1], flush=True)
+server.serve_forever()
 "#;
 
 /// Answers in a content coding the proxy has no way to undo, with bytes that are not
 /// text either. There is nothing honest to record here, so the only right answer is
 /// to say so.
 const OPAQUE_PROVIDER: &str = r#"
-import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 BODY = bytes(range(200, 256)) * 8
@@ -177,7 +178,9 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(BODY)
 
-ThreadingHTTPServer(("127.0.0.1", int(sys.argv[1])), Handler).serve_forever()
+server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+print(server.server_address[1], flush=True)
+server.serve_forever()
 "#;
 
 /// No noidroid import, and no base_url — it comes from the environment.
@@ -518,30 +521,58 @@ fn client_path() -> PathBuf {
         .expect("the python client is part of the repository")
 }
 
+/// The port the child announced on its first line of stdout, or `None` if it said
+/// something else or nothing at all. Bounded, because a provider that never speaks
+/// would otherwise hang the suite instead of failing it.
+fn announced_port(stdout: ChildStdout) -> Option<u16> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut line = String::new();
+        let _ = BufReader::new(stdout).read_line(&mut line);
+        let _ = tx.send(line);
+    });
+    let line = rx.recv_timeout(Duration::from_secs(10)).ok()?;
+    line.trim().parse().ok()
+}
+
 struct Provider {
     child: Child,
     port: u16,
 }
 
 impl Provider {
-    fn start(script: &Path, port: u16) -> Provider {
+    /// Starts the script on a port the OS picked, and reads that port back from the
+    /// child that is listening on it.
+    ///
+    /// The port has to come from the process we spawned. A fixed port is a shared
+    /// name, and `TcpStream::connect` answering on one proves only that *something* is
+    /// listening -- a provider left behind by a killed run, or a second worktree of
+    /// this repository running the same suite, gets recorded in place of the provider
+    /// under test. For `a_streamed_response_reaches_the_client_before_it_ends` that is
+    /// a wrong verdict rather than a confusing error, because a stale non-streaming
+    /// provider makes the arrival-spread assertion fail on a proxy that is fine.
+    /// Same remedy as `unique_socket_path` in the engine and as #44 gave `Store::put`:
+    /// never assume a name that another process could already hold.
+    fn start(script: &Path) -> Provider {
         let mut child = Command::new("python3")
             .arg(script)
-            .arg(port.to_string())
-            .stdout(Stdio::null())
+            .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
             .expect("the stand-in provider should start");
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while Instant::now() < deadline {
-            if TcpStream::connect(("127.0.0.1", port)).is_ok() {
-                return Provider { child, port };
+        let stdout = child.stdout.take().expect("the child's stdout is a pipe");
+        match announced_port(stdout) {
+            Some(port) => Provider { child, port },
+            None => {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("the stand-in provider never announced a port");
             }
-            std::thread::sleep(Duration::from_millis(50));
         }
-        let _ = child.kill();
-        let _ = child.wait();
-        panic!("the stand-in provider never came up");
+    }
+
+    fn endpoint(&self) -> String {
+        format!("http://127.0.0.1:{}", self.port)
     }
 
     fn stop(mut self) {
@@ -579,6 +610,42 @@ fn scratch(label: &str) -> PathBuf {
     dir
 }
 
+/// A provider handle refers to the process it started, never to whoever answered.
+///
+/// This is what a fixed port cost: with one, a second provider spawned while the
+/// first was up failed to bind, died, and `start` handed back a dead child paired
+/// with the incumbent's port -- so the run under test recorded against a server it
+/// had never started and could not stop. The check is behavioural: killing our own
+/// provider must take our own port down and leave the other one alone.
+#[test]
+fn a_provider_never_adopts_a_server_it_did_not_start() {
+    let dir = scratch("proxy-identity");
+    let script = dir.join("provider.py");
+    fs::write(&script, PROVIDER).unwrap();
+
+    let incumbent = Provider::start(&script);
+    let ours = Provider::start(&script);
+    assert_ne!(
+        ours.port, incumbent.port,
+        "two providers cannot both own one port"
+    );
+
+    // `stop` panics if anything still answers, which is the adoption case exactly.
+    let port = ours.port;
+    ours.stop();
+    assert!(
+        TcpStream::connect(("127.0.0.1", port)).is_err(),
+        "our provider's port stayed up after we killed our own child"
+    );
+    assert!(
+        TcpStream::connect(("127.0.0.1", incumbent.port)).is_ok(),
+        "we stopped a provider we did not start"
+    );
+
+    incumbent.stop();
+    let _ = fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn an_agent_that_knows_nothing_about_us_records_and_replays() {
     if !sdk_available() {
@@ -597,6 +664,8 @@ fn an_agent_that_knows_nothing_about_us_records_and_replays() {
     );
 
     let repo = Repo::open(&dir).unwrap();
+    let provider = Provider::start(&provider_script);
+    let upstream = provider.endpoint();
     // Exactly what `noidroid run --proxy` builds: the proxy is an ordinary client of
     // the protocol that happens to run the agent as its own child.
     let spec = |name: Option<&str>| RunSpec {
@@ -605,7 +674,7 @@ fn an_agent_that_knows_nothing_about_us_records_and_replays() {
             "-m".into(),
             "noidroid.proxy".into(),
             "--upstream".into(),
-            format!("http://127.0.0.1:{PORT}"),
+            upstream.clone(),
             "--".into(),
             "python3".into(),
             agent.display().to_string(),
@@ -617,7 +686,6 @@ fn an_agent_that_knows_nothing_about_us_records_and_replays() {
         watch: None,
     };
 
-    let provider = Provider::start(&provider_script, PORT);
     let recorded = engine::run(&repo, &spec(Some("proxied")), Mode::Record, None)
         .expect("recording through the proxy should work")
         .trajectory
@@ -694,13 +762,15 @@ fn a_streamed_response_reaches_the_client_before_it_ends() {
     );
 
     let repo = Repo::open(&dir).unwrap();
+    let provider = Provider::start(&provider_script);
+    let upstream = provider.endpoint();
     let spec = |name: Option<&str>, timings: &Path| RunSpec {
         command: vec![
             "python3".into(),
             "-m".into(),
             "noidroid.proxy".into(),
             "--upstream".into(),
-            format!("http://127.0.0.1:{STREAM_PORT}"),
+            upstream.clone(),
             "--".into(),
             "python3".into(),
             agent.display().to_string(),
@@ -716,7 +786,6 @@ fn a_streamed_response_reaches_the_client_before_it_ends() {
     };
     let while_recording = dir.join("recorded-arrivals.txt");
 
-    let provider = Provider::start(&provider_script, STREAM_PORT);
     let recorded = engine::run(
         &repo,
         &spec(Some("streamed"), &while_recording),
@@ -821,13 +890,15 @@ fn a_compressed_response_is_never_recorded_as_replacement_characters() {
     fs::write(&agent, AGENT).unwrap();
 
     let repo = Repo::open(&dir).unwrap();
+    let provider = Provider::start(&provider_script);
+    let upstream = provider.endpoint();
     let spec = |name: Option<&str>| RunSpec {
         command: vec![
             "python3".into(),
             "-m".into(),
             "noidroid.proxy".into(),
             "--upstream".into(),
-            format!("http://127.0.0.1:{GZIP_PORT}"),
+            upstream.clone(),
             "--".into(),
             "python3".into(),
             agent.display().to_string(),
@@ -839,7 +910,6 @@ fn a_compressed_response_is_never_recorded_as_replacement_characters() {
         watch: None,
     };
 
-    let provider = Provider::start(&provider_script, GZIP_PORT);
     let recorded = engine::run(&repo, &spec(Some("gzipped")), Mode::Record, None)
         .expect("recording through the proxy should work")
         .trajectory
@@ -913,13 +983,14 @@ fn a_content_coding_we_cannot_decode_fails_the_call_instead_of_being_recorded() 
     fs::write(&agent, REPORTING_AGENT).unwrap();
 
     let repo = Repo::open(&dir).unwrap();
+    let provider = Provider::start(&provider_script);
     let spec = RunSpec {
         command: vec![
             "python3".into(),
             "-m".into(),
             "noidroid.proxy".into(),
             "--upstream".into(),
-            format!("http://127.0.0.1:{OPAQUE_PORT}"),
+            provider.endpoint(),
             "--".into(),
             "python3".into(),
             agent.display().to_string(),
@@ -931,7 +1002,6 @@ fn a_content_coding_we_cannot_decode_fails_the_call_instead_of_being_recorded() 
         watch: None,
     };
 
-    let provider = Provider::start(&provider_script, OPAQUE_PORT);
     let recorded = engine::run(&repo, &spec, Mode::Record, None)
         .expect("the run itself should complete; only the call fails")
         .trajectory
@@ -998,12 +1068,16 @@ fn a_trajectory_recorded_through_the_old_proxy_is_not_reported_as_simply_faithfu
     fs::write(&agent, AGENT).unwrap();
 
     let repo = Repo::open(&dir).unwrap();
+    // The legacy proxy takes its upstream on the command line, so the provider has to
+    // be up -- and its OS-assigned port known -- before `spec` can be built at all.
+    let provider = Provider::start(&provider_script);
+    let upstream = provider.endpoint();
     let spec = |name: Option<&str>| RunSpec {
         command: vec![
             "python3".into(),
             proxy_script.display().to_string(),
             "--upstream".into(),
-            format!("http://127.0.0.1:{LEGACY_GZIP_PORT}"),
+            upstream.clone(),
             "--".into(),
             "python3".into(),
             agent.display().to_string(),
@@ -1015,7 +1089,6 @@ fn a_trajectory_recorded_through_the_old_proxy_is_not_reported_as_simply_faithfu
         watch: None,
     };
 
-    let provider = Provider::start(&provider_script, LEGACY_GZIP_PORT);
     let recorded = engine::run(&repo, &spec(Some("legacy-gzipped")), Mode::Record, None)
         .expect("recording through the old proxy should still complete")
         .trajectory
