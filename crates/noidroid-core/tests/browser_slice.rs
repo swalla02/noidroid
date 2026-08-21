@@ -9,9 +9,11 @@
 
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::{BufRead, BufReader};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, ChildStdout, Command, Stdio};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use noidroid_core::engine::{self, Mode, RunSpec};
@@ -125,24 +127,32 @@ struct Site {
 }
 
 impl Site {
-    fn start(root: &Path, port: u16) -> Site {
+    /// Starts the example site on a port the OS picked, and reads that port back
+    /// from the child serving on it.
+    ///
+    /// A fixed port is a shared name: `connect` answering on one says only that
+    /// *something* is listening, so a site left behind by a killed run -- or a second
+    /// worktree of this repository running the same suite -- would be recorded in
+    /// place of the one this test started, and `stop` could not take it away. The
+    /// whole proof here is that the site is gone before the branch runs. See #74, and
+    /// `unique_socket_path` in the engine for the same remedy.
+    fn start(root: &Path) -> Site {
         let mut child = Command::new("python3")
             .arg(root.join("examples/browser_agent/site.py"))
-            .arg(port.to_string())
-            .stdout(Stdio::null())
+            .arg("0")
+            .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
             .expect("the example site should start");
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while Instant::now() < deadline {
-            if TcpStream::connect(("127.0.0.1", port)).is_ok() {
-                return Site { child, port };
+        let stdout = child.stdout.take().expect("the child's stdout is a pipe");
+        match announced_port(stdout) {
+            Some(port) => Site { child, port },
+            None => {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("the example site never announced a port");
             }
-            std::thread::sleep(Duration::from_millis(50));
         }
-        let _ = child.kill();
-        let _ = child.wait();
-        panic!("the example site never came up on port {port}");
     }
 
     fn stop(mut self) {
@@ -165,6 +175,21 @@ impl Drop for Site {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
+}
+
+/// The port the site announced on its first line of stdout -- `serving on
+/// http://127.0.0.1:<port>` -- or `None` if it said something else or nothing at all.
+/// Bounded, because a site that never speaks would otherwise hang the suite instead
+/// of failing it.
+fn announced_port(stdout: ChildStdout) -> Option<u16> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut line = String::new();
+        let _ = BufReader::new(stdout).read_line(&mut line);
+        let _ = tx.send(line);
+    });
+    let line = rx.recv_timeout(Duration::from_secs(10)).ok()?;
+    line.trim().rsplit(':').next()?.parse().ok()
 }
 
 struct Fixture {
@@ -294,10 +319,9 @@ fn a_browser_session_reconstructs_from_recorded_responses_alone() {
         return;
     }
 
-    let f = Fixture::new(8712);
-
     // 1. Record against the live site.
-    let site = Site::start(&f.root, f.port);
+    let site = Site::start(&repo_root());
+    let f = Fixture::new(site.port);
     let recorded = engine::run(&f.repo, &f.spec("web-1", true), Mode::Record, None)
         .expect("recording should succeed")
         .trajectory
@@ -392,8 +416,8 @@ fn a_browser_branch_can_reach_a_different_outcome() {
         return;
     }
 
-    let f = Fixture::new(8713);
-    let site = Site::start(&f.root, f.port);
+    let site = Site::start(&repo_root());
+    let f = Fixture::new(site.port);
 
     let recorded = engine::run(&f.repo, &f.spec("web-1", true), Mode::Record, None)
         .unwrap()
@@ -426,8 +450,8 @@ fn a_page_that_cannot_be_reproduced_makes_everything_after_it_unknown() {
         return;
     }
 
-    let f = Fixture::new(8714);
-    let site = Site::start(&f.root, f.port);
+    let site = Site::start(&repo_root());
+    let f = Fixture::new(site.port);
     let agent = f.dir.join("volatile_agent.py");
     fs::write(&agent, VOLATILE_AGENT).unwrap();
 
