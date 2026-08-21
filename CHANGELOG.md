@@ -19,6 +19,17 @@ how the package version relates to `STEP_VERSION`, the on-disk object format.
   example reports seventeen characters of unterminated JSON as seventeen flights, out
   loud, before anything goes wrong. The presets themselves shipped inside 0.3.0
   unannounced and with no test; they now have both. (#35)
+- **`noidroid cost` — what a trajectory bought, and what it did not.** Every recorded
+  model call already carried the provider's own token counts, and nothing added them
+  up, so the tool's most legible property was invisible: a branch whose model call
+  sits in the shared prefix executes nothing and therefore buys nothing. Tokens are
+  read back out of the recorded response and split by the step's delivery, which is
+  the recorded fact about whether a provider was reached. Money is not: there is no
+  built-in price list, `--price 'MODEL=IN/OUT'` is the only source of one, and without
+  it the output says which model it could not price rather than printing a figure it
+  made up. `$0.00` is the exception, because zero tokens cost nothing at every price
+  there is. An imported bundle carries content but not per-run notes, so it cannot say
+  how its calls were delivered — and says so instead of totalling to zero. (#36)
 
 ### Changed
 

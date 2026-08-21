@@ -13,6 +13,7 @@
 
 pub mod bundle;
 pub mod checkpoint;
+pub mod cost;
 pub mod engine;
 pub mod env;
 pub mod error;

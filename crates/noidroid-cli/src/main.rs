@@ -10,6 +10,7 @@ use serde_json::Value;
 
 use noidroid_core::bundle;
 use noidroid_core::checkpoint;
+use noidroid_core::cost;
 use noidroid_core::engine::{self, Mode, Report, RunSpec};
 use noidroid_core::model::{Action, Failure, Intervention, Provenance, Step, Trajectory};
 use noidroid_core::repo::{self, Repo};
@@ -161,6 +162,17 @@ enum Command {
         #[arg(long = "as", value_name = "NAME")]
         rename: Option<String>,
     },
+    /// Add up what a trajectory's model calls used, and what that cost.
+    Cost {
+        /// Trajectory name. Omit to account for every one, side by side.
+        trajectory: Option<String>,
+        /// What a model charges, in US dollars per million tokens:
+        /// `--price 'claude-sonnet-4-5=3/15'`. Without one you get tokens and no
+        /// money: token counts are recorded facts, a price is not, and this does not
+        /// guess at yours.
+        #[arg(long, value_name = "MODEL=IN/OUT")]
+        price: Vec<String>,
+    },
     /// Show the branch graph.
     Tree,
     /// Compare two trajectories.
@@ -275,6 +287,7 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
         } => cmd_bisect(&repo, &cwd, &trajectory, goal, first, simulate),
         Command::Export { trajectory, output } => cmd_export(&repo, &trajectory, output),
         Command::Import { file, rename } => cmd_import(&repo, &file, rename.as_deref()),
+        Command::Cost { trajectory, price } => cmd_cost(&repo, trajectory, price),
         Command::Tree => cmd_tree(&repo),
         Command::Diff { a, b } => cmd_diff(&repo, &a, &b),
         Command::Verify => cmd_verify(&repo),
@@ -841,10 +854,11 @@ fn cmd_branch(
         );
     }
     println!(
-        "\n  {}\n    noidroid diff {} {}",
+        "\n  {}\n    noidroid diff {} {}\n    noidroid cost   {}",
         dim("compare:"),
         name,
-        branch.name
+        branch.name,
+        dim("— what each of them bought")
     );
     Ok(ExitCode::SUCCESS)
 }
@@ -1203,6 +1217,314 @@ fn human_size(bytes: usize) -> String {
     } else {
         format!("{size:.1} {}", UNITS[unit])
     }
+}
+
+/// Add up the model calls a trajectory recorded, and say what they cost.
+///
+/// Token counts come out of the responses the recording already holds, so they are
+/// facts. Whether a token was *bought* is the step's delivery, which is also a fact.
+/// The price is neither: it comes from the caller or the output says so and prints no
+/// money. The one exception is zero — no tokens costs nothing at every price there is,
+/// which is exactly what makes a replayed branch worth a sentence.
+fn cmd_cost(repo: &Repo, trajectory: Option<String>, price: Vec<String>) -> Result<ExitCode> {
+    let prices = parse_prices(&price)?;
+    match trajectory {
+        Some(name) => {
+            let t = repo.load_trajectory(&name)?;
+            print_ledger(&cost::account(repo, &t)?, &prices);
+        }
+        None => {
+            let all = repo.list_trajectories()?;
+            if all.is_empty() {
+                println!(
+                    "{}",
+                    dim("no trajectories yet — try: noidroid run -- <command>")
+                );
+                return Ok(ExitCode::SUCCESS);
+            }
+            println!("{}", shell("COST"));
+            let mut unpriced: Vec<String> = Vec::new();
+            for t in &all {
+                let ledger = cost::account(repo, t)?;
+                unpriced.extend(
+                    missing_prices(&ledger, &prices)
+                        .into_iter()
+                        .map(str::to_string),
+                );
+                print_ledger_line(t, &ledger, &prices);
+            }
+            unpriced.sort();
+            unpriced.dedup();
+            if !unpriced.is_empty() {
+                println!(
+                    "\n  {} {}",
+                    dim("tokens, not money — no price was supplied for"),
+                    unpriced.join(", ")
+                );
+                println!(
+                    "  {}",
+                    dim(&format!(
+                        "noidroid cost --price '{}=<in>/<out>'   (US dollars per million tokens)",
+                        unpriced[0]
+                    ))
+                );
+            }
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn parse_prices(specs: &[String]) -> Result<BTreeMap<String, cost::Price>> {
+    let mut out = BTreeMap::new();
+    for spec in specs {
+        let (model, rate) = split_kv(spec)?;
+        let price = cost::Price::parse(&rate).ok_or_else(|| {
+            Error::Refused(format!(
+                "--price '{spec}': a price is two non-negative numbers, \
+                 input/output in US dollars per million tokens, as in '{model}=3/15'"
+            ))
+        })?;
+        out.insert(model, price);
+    }
+    Ok(out)
+}
+
+fn print_ledger(ledger: &cost::Ledger, prices: &BTreeMap<String, cost::Price>) {
+    println!("{} {}", shell("COST"), bold(&ledger.trajectory));
+    if ledger.is_empty() {
+        println!(
+            "  {}",
+            dim("no model call here reported what it used; there is nothing to add up")
+        );
+        return;
+    }
+
+    let calls: Vec<String> = ledger
+        .by_delivery()
+        .iter()
+        .map(|(label, tally)| format!("{} {}", tally.calls, delivery_phrase(label)))
+        .collect();
+    if !calls.is_empty() {
+        println!("  {:<22} {}", dim("model calls"), calls.join(", "));
+    }
+
+    let spent = ledger.spent();
+    let kept = ledger.not_spent();
+    let unknown = ledger.undeliverable();
+    if unknown.usage.is_zero() {
+        println!("  {:<22} {}", dim("tokens spent"), usage_text(&spent.usage));
+    } else {
+        // Delivery is what says whether a token was bought. Without it, "0 spent" is
+        // a claim we cannot make, so the line says so instead of totalling to zero.
+        println!("  {:<22} {}", dim("tokens spent"), warn("cannot be said"));
+        println!(
+            "  {:<22} {}",
+            dim("tokens used"),
+            usage_text(&unknown.usage)
+        );
+    }
+    if !kept.usage.is_zero() {
+        println!(
+            "  {:<22} {} {}",
+            dim("tokens not spent"),
+            usage_text(&kept.usage),
+            dim("(used, but never bought)")
+        );
+    }
+    if !spent.usage.extra.is_empty() {
+        println!(
+            "  {:<22} {} {}",
+            dim("also spent"),
+            counters(&spent.usage.extra),
+            dim("(the provider's own counters, billed at their own rates)")
+        );
+    }
+    // One line per model per delivery, once there is more than one model to tell apart.
+    if ledger.models().len() > 1 {
+        for entry in &ledger.entries {
+            println!(
+                "  {:<22} {} {}",
+                dim(&entry.model),
+                usage_text(&entry.tally.usage),
+                dim(delivery_phrase(entry.delivery))
+            );
+        }
+    }
+    if ledger.calls_without_usage > 0 {
+        println!(
+            "  {:<22} {}",
+            dim("unaccounted"),
+            warn(&format!(
+                "{} model call(s) whose recorded response says nothing about what it used",
+                ledger.calls_without_usage
+            ))
+        );
+    }
+
+    println!();
+    print_verdict(ledger, prices);
+}
+
+/// The sentence. Either a figure that can be traced to something, or the reason there
+/// is no figure — never a number this tool made up.
+fn print_verdict(ledger: &cost::Ledger, prices: &BTreeMap<String, cost::Price>) {
+    let spent = ledger.spent();
+    let unknown = ledger.undeliverable();
+    if !unknown.usage.is_zero() {
+        println!(
+            "  {} {} were used, and nothing here records how they were delivered.",
+            warn("cost:"),
+            usage_text(&unknown.usage)
+        );
+        println!(
+            "        {}",
+            dim(
+                "a bundle carries content, not per-run notes, so whether these were \
+                 bought cannot be answered from here"
+            )
+        );
+        return;
+    }
+    if spent.usage.is_zero() {
+        println!(
+            "  {} {} — every model call was {}, so nothing was bought.",
+            ok("cost:"),
+            bold("$0.00"),
+            free_phrase(ledger)
+        );
+        return;
+    }
+
+    let missing = missing_prices(ledger, prices);
+    if missing.is_empty() {
+        println!(
+            "  {} {} {}",
+            ok("cost:"),
+            bold(&cost::dollars(priced_total(ledger, prices))),
+            dim(&format!(
+                "— {}, at the price you supplied",
+                usage_text(&spent.usage)
+            ))
+        );
+        if !spent.usage.extra.is_empty() {
+            println!(
+                "        {}",
+                warn(
+                    "the figure covers input and output only; nobody supplied a rate \
+                     for the other counters above"
+                )
+            );
+        }
+        return;
+    }
+    println!(
+        "  {} {} spent. Money is not reported: no price was supplied for {}.",
+        warn("cost:"),
+        usage_text(&spent.usage),
+        missing.join(", ")
+    );
+    println!(
+        "        {}",
+        dim("a price this tool invented would read exactly like one it measured")
+    );
+    println!(
+        "        {}",
+        dim(&format!(
+            "noidroid cost {} --price '{}=<in>/<out>'   (US dollars per million tokens)",
+            ledger.trajectory, missing[0]
+        ))
+    );
+}
+
+fn print_ledger_line(
+    t: &Trajectory,
+    ledger: &cost::Ledger,
+    prices: &BTreeMap<String, cost::Price>,
+) {
+    if ledger.is_empty() {
+        println!("{:<18} {}", bold(&t.name), dim("no model calls"));
+        return;
+    }
+    let spent = ledger.spent();
+    let money = if !ledger.undeliverable().usage.is_zero() {
+        warn("?")
+    } else if spent.usage.is_zero() {
+        ok("$0.00")
+    } else if missing_prices(ledger, prices).is_empty() {
+        bold(&cost::dollars(priced_total(ledger, prices)))
+    } else {
+        dim("—")
+    };
+    let note = if spent.usage.is_zero() {
+        format!("— {}", free_phrase(ledger))
+    } else {
+        String::new()
+    };
+    println!(
+        "{}",
+        format!(
+            "{:<18} {:<24} {:<10} {}",
+            bold(&t.name),
+            format!("{} spent", usage_text(&spent.usage)),
+            money,
+            dim(&note)
+        )
+        .trim_end()
+    );
+}
+
+/// The bill for what was bought, at the prices the caller supplied. Only ever called
+/// once every model that was bought from has one.
+fn priced_total(ledger: &cost::Ledger, prices: &BTreeMap<String, cost::Price>) -> f64 {
+    ledger
+        .spent_by_model()
+        .iter()
+        .filter_map(|(model, usage)| prices.get(*model).map(|price| price.of(usage)))
+        .sum()
+}
+
+/// Models this trajectory really bought tokens from and nobody priced.
+fn missing_prices<'a>(
+    ledger: &'a cost::Ledger,
+    prices: &BTreeMap<String, cost::Price>,
+) -> Vec<&'a str> {
+    ledger
+        .spent_by_model()
+        .into_iter()
+        .filter(|(model, _)| !prices.contains_key(*model))
+        .map(|(model, _)| model)
+        .collect()
+}
+
+/// How a trajectory that bought nothing got its tokens instead.
+fn free_phrase(ledger: &cost::Ledger) -> String {
+    let deliveries = ledger.by_delivery();
+    match deliveries.as_slice() {
+        [(label, _)] => delivery_phrase(label).to_string(),
+        _ => "delivered without executing".to_string(),
+    }
+}
+
+fn delivery_phrase(label: &str) -> &'static str {
+    match label {
+        "executed" => "executed",
+        "replayed" => "served from the recording",
+        "intervened" => "supplied by an intervention",
+        "denied" => "denied",
+        _ => "delivered in a way nothing wrote down",
+    }
+}
+
+fn usage_text(usage: &cost::Usage) -> String {
+    format!("{} in / {} out", usage.input, usage.output)
+}
+
+fn counters(extra: &BTreeMap<String, u64>) -> String {
+    extra
+        .iter()
+        .map(|(name, count)| format!("{count} {name}"))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn cmd_tree(repo: &Repo) -> Result<ExitCode> {
