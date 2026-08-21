@@ -9,7 +9,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use noidroid_core::engine::{self, DivergenceKind, Mode, Report, RunSpec};
-use noidroid_core::model::{Action, Intervention, Provenance, Trajectory};
+use noidroid_core::model::{Action, Failure, Intervention, Provenance, Trajectory};
 use noidroid_core::Repo;
 
 /// A program that interacts with the world, writes a file nobody mediates, makes a
@@ -67,6 +67,20 @@ else:
     nd.finish("success", {"chose": choice})
 "#;
 
+/// A program that does not check what came back.
+///
+/// Not a straw man — this is the ordinary agent. It asks the world something and uses
+/// the answer, which is exactly what the two interesting failures are aimed at:
+/// `malformed` and `empty` raise nothing, so the only thing between a bad answer and
+/// the verdict is validation this program does not do.
+const CREDULOUS: &str = r#"
+import noidroid
+
+nd = noidroid.connect()
+answer = nd.call("world.read", lambda: {"temp": 41}, args={})
+nd.finish("read", {"got": answer, "python_type": type(answer).__name__})
+"#;
+
 struct Fixture {
     dir: PathBuf,
     repo: Repo,
@@ -76,6 +90,10 @@ struct Fixture {
 
 impl Fixture {
     fn new(tag: &str) -> Fixture {
+        Fixture::with_agent(tag, AGENT)
+    }
+
+    fn with_agent(tag: &str, source: &str) -> Fixture {
         let dir = std::env::temp_dir().join(format!(
             "noidroid-it-{tag}-{}-{}",
             std::process::id(),
@@ -86,7 +104,7 @@ impl Fixture {
         ));
         fs::create_dir_all(&dir).unwrap();
         let agent = dir.join("agent.py");
-        fs::write(&agent, AGENT).unwrap();
+        fs::write(&agent, source).unwrap();
         let witness = dir.join("witness.log");
         let repo = Repo::open(&dir).unwrap();
         Fixture {
@@ -723,4 +741,140 @@ fn a_live_replay_reruns_only_what_it_was_asked_to() {
 
     // The recording it came from is untouched.
     assert_eq!(f.repo.load_trajectory("run-1").unwrap(), recorded);
+}
+
+// -- named failures -------------------------------------------------------------
+//
+// Branching could always replace a result or raise an error; the operator had to
+// write the payload. Naming the ways a world fails is what turns that into something
+// people actually reach for. Two of the six are the reason the feature exists:
+// `malformed` and `empty` raise nothing at all.
+
+/// Branch the credulous program at its one call, injecting a named failure.
+fn inject(f: &Fixture, parent: &Trajectory, failure: Failure) -> Trajectory {
+    engine::run(
+        &f.repo,
+        &f.spec(Some(&format!("alt-{}", failure.label())), &[]),
+        Mode::Branch {
+            at: 1,
+            intervention: failure.as_intervention(),
+            simulate: BTreeMap::new(),
+        },
+        Some(parent),
+    )
+    .expect("the branch itself runs to completion")
+    .trajectory
+    .expect("the checkpoint is reachable, so the branch is a trajectory")
+}
+
+#[test]
+fn an_injected_malformed_result_is_handed_to_the_agent_unvalidated() {
+    let f = Fixture::with_agent("malformed", CREDULOUS);
+    let parent = f.record();
+    assert_eq!(
+        parent.outcome.result["got"],
+        serde_json::json!({"temp": 41})
+    );
+
+    let branch = inject(&f, &parent, Failure::Malformed);
+
+    // Nothing threw, so the program reached its own verdict on an answer that is not
+    // the shape its recording says it should be. That is the finding: an agent that
+    // does not validate a tool result cannot tell this from ground truth.
+    assert_eq!(
+        branch.outcome.status, "read",
+        "malformed raises nothing, so the program must run on to its own finish"
+    );
+    assert_eq!(
+        branch.outcome.result["python_type"],
+        serde_json::json!("str"),
+        "the agent was handed a string where its recording had an object"
+    );
+    assert_eq!(
+        branch.outcome.result["got"],
+        serde_json::json!("{\"unterminated\": "),
+        "the payload arrives verbatim — unparsed, unchecked, and believed"
+    );
+
+    // And it stays simulated, because it never happened.
+    let chain = f.repo.chain(&branch).unwrap();
+    assert_eq!(chain[1].1.provenance, Provenance::Simulated);
+    assert_eq!(
+        chain.last().unwrap().1.provenance,
+        Provenance::Simulated,
+        "a verdict reached on an injected answer is not evidence about anything"
+    );
+}
+
+#[test]
+fn an_injected_empty_result_is_a_value_and_not_an_error() {
+    let f = Fixture::with_agent("empty", CREDULOUS);
+    let parent = f.record();
+
+    let branch = inject(&f, &parent, Failure::Empty);
+
+    // Well formed and says nothing. The client hands back `None` and the program
+    // carries it into the verdict, which is the whole point of naming this one.
+    assert_eq!(
+        branch.outcome.status, "read",
+        "empty raises nothing, so the program must run on to its own finish"
+    );
+    assert_eq!(
+        branch.outcome.result["python_type"],
+        serde_json::json!("NoneType")
+    );
+    assert_eq!(branch.outcome.result["got"], serde_json::Value::Null);
+    assert_eq!(
+        f.repo.chain(&branch).unwrap().last().unwrap().1.provenance,
+        Provenance::Simulated
+    );
+}
+
+#[test]
+fn no_named_failure_may_claim_to_have_really_happened() {
+    let f = Fixture::with_agent("named", CREDULOUS);
+    let parent = f.record();
+    assert_eq!(parent.outcome.status, "read");
+
+    for failure in Failure::ALL {
+        let label = failure.label();
+        let branch = inject(&f, &parent, failure);
+        let chain = f.repo.chain(&branch).unwrap();
+
+        assert_eq!(
+            chain[0].1.provenance,
+            Provenance::Real,
+            "{label}: the prefix really happened"
+        );
+        assert_eq!(
+            chain[1].1.effects[0].provenance,
+            Provenance::Simulated,
+            "{label}: the injected value is simulated"
+        );
+        assert_eq!(
+            chain[1].1.intervention.as_ref(),
+            Some(&failure.as_intervention()),
+            "{label}: the step records what was done to it"
+        );
+        assert_eq!(
+            chain.last().unwrap().1.provenance,
+            Provenance::Simulated,
+            "{label}: nothing downstream of an injection may improve"
+        );
+
+        // The two families are told apart by whether the program survives them. Four
+        // of these are raised at the call site; `malformed` and `empty` come back
+        // looking like answers, and the program finishes on them.
+        if matches!(failure.as_intervention(), Intervention::Fail { .. }) {
+            assert_ne!(
+                branch.outcome.status, "read",
+                "{label}: a raised failure must stop the program short of its verdict"
+            );
+        } else {
+            assert_eq!(
+                branch.outcome.status, "read",
+                "{label}: nothing throws, so the program reaches its own verdict"
+            );
+        }
+    }
 }

@@ -103,8 +103,9 @@ enum Command {
         /// Make the interaction fail: `--fail 'message'`.
         #[arg(long, value_name = "MESSAGE")]
         fail: Option<String>,
-        /// A named way the world fails: timeout, server-error, rate-limited,
-        /// malformed, empty, unauthorized. `--inject all` branches each in turn.
+        /// A named way the world fails, with the payload written for you: timeout,
+        /// server-error (500), rate-limited (429), unauthorized (401), malformed,
+        /// empty. The last two raise nothing, which is what makes them interesting.
         #[arg(long, value_name = "KIND")]
         inject: Option<String>,
         /// Stated-simulated value for an irreversible effect past the divergence
@@ -692,14 +693,10 @@ fn cmd_branch(
     inject: Option<String>,
     simulate: Vec<String>,
 ) -> Result<ExitCode> {
-    let (name, index) = repo::parse_ref(reference);
-    let at = index.ok_or_else(|| {
-        Error::Refused("a branch needs a checkpoint: <trajectory>@<step>".to_string())
-    })?;
-    let parent = repo.load_trajectory(&name)?;
-
     // A named failure is just an intervention with the payload written for you —
     // which is the difference between a thing people do and a thing people mean to.
+    // Checked before anything is loaded: a name that does not exist is refused on its
+    // own terms, not behind whatever the rest of the command line turns out to mean.
     let injected = match &inject {
         Some(kind) => Some(Failure::parse(kind).ok_or_else(|| {
             Error::Refused(format!(
@@ -718,6 +715,12 @@ fn cmd_branch(
             "give exactly one of --decide, --result, --fail, --inject".into(),
         ));
     }
+
+    let (name, index) = repo::parse_ref(reference);
+    let at = index.ok_or_else(|| {
+        Error::Refused("a branch needs a checkpoint: <trajectory>@<step>".to_string())
+    })?;
+    let parent = repo.load_trajectory(&name)?;
 
     let intervention = match (decide, result, fail) {
         (Some(spec), None, None) => {
