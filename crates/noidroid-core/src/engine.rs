@@ -33,6 +33,7 @@ use crate::checkpoint;
 use crate::env::{Environment, Grip, Situation, State, Workspace, WORLD_DIR};
 use crate::error::{Doing, Error, Result};
 use crate::hash::Digest;
+use crate::intact;
 use crate::model::{
     Action, Delivery, Effect, EffectKind, EffectOutcome, ForkPoint, Intervention, Outcome,
     Provenance, Step, StepNote, Trajectory,
@@ -139,6 +140,13 @@ pub struct Report {
     /// The weakest grip anywhere in this run: what it could prove at its weakest
     /// point, which is what it can prove.
     pub grip: Grip,
+    /// Recorded values in the *source* trajectory that were not recorded intact.
+    ///
+    /// Nothing this run did can change these: they are a property of the recording
+    /// being reconstructed. They are here because the run is where somebody reads the
+    /// verdict, and a reconstruction that re-derives a mangled body reproduces it
+    /// perfectly. See [`crate::intact`].
+    pub unreadable: Vec<intact::Finding>,
     pub divergences: Vec<Divergence>,
     pub provenance: BTreeMap<&'static str, u64>,
     pub delivery: BTreeMap<&'static str, u64>,
@@ -153,7 +161,22 @@ pub struct Report {
 }
 
 impl Report {
+    /// Every step re-derived to its recorded address, *and* those addresses are worth
+    /// something.
+    ///
+    /// The second half is not decoration. A trajectory holding a body that was
+    /// written down wrong reproduces that body exactly, so hash equality alone
+    /// reports it as a perfect reconstruction of something nobody ever said. Anything
+    /// read as [`intact::Reading::Lost`] therefore takes `faithful` away — the claim
+    /// is not available, which is different from being false.
     pub fn faithful(&self) -> bool {
+        self.reproduces_the_recording() && intact::lost(&self.unreadable).next().is_none()
+    }
+
+    /// The narrow, mechanical half: the re-derived chain addresses the same objects.
+    /// True of a trajectory whose content is garbage, which is why it is not the
+    /// verdict anybody should print on its own.
+    pub fn reproduces_the_recording(&self) -> bool {
         self.divergences.is_empty() && self.reproduced == self.expected
     }
 }
@@ -193,6 +216,11 @@ pub fn run(repo: &Repo, spec: &RunSpec, mode: Mode, source: Option<&Trajectory>)
             return Err(Error::Refused(why));
         }
     }
+
+    // Read *before* anything is spawned, and independent of what the run does: this
+    // is a property of the recording, and a reconstruction of a mangled body succeeds
+    // by definition.
+    let unreadable = intact::scan_chain(&repo.store, &recorded)?;
 
     let run_label = spec.name.clone().unwrap_or_else(|| {
         format!(
@@ -274,6 +302,7 @@ pub fn run(repo: &Repo, spec: &RunSpec, mode: Mode, source: Option<&Trajectory>)
         notes: Vec::new(),
         report: Report {
             mode: mode.label().to_string(),
+            unreadable,
             stdout_path: Some(stdout_path.clone()),
             stderr_path: Some(stderr_path.clone()),
             workspace: Some(workspace.clone()),
