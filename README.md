@@ -469,6 +469,7 @@ noidroid diff run-1 alt-1
 | Command | |
 |---|---|
 | `noidroid run -- <cmd>` | run a program and record its trajectory |
+| `noidroid doctor [-- <cmd>]` | say what a recording would and would not cover, before making one |
 | `noidroid log [<traj>]` | list trajectories, or show one as a timeline |
 | `noidroid show <traj>@<step>` | inspect a checkpoint and how to explore from it |
 | `noidroid replay <traj>` | re-derive a trajectory and check it still hashes the same |
@@ -567,6 +568,55 @@ connections opened before the client loaded.
 replaying it makes the same one. Refusing costs you a run; recording anyway costs the
 trust in every run, because a trajectory that missed the model calls still looks real
 and still claims to replay faithfully.
+
+### Finding out before you record
+
+`--auto` refuses at the moment of recording, and only for the holes it knows to look
+for. `noidroid doctor` asks the same questions first:
+
+```console
+$ noidroid doctor -- python3 agent.py
+DOCTOR  what a recording made now would and would not cover
+
+  THE TOOL
+    python3       ok              3.12.3 at /usr/bin/python3
+    client        ok              importable from …/clients/python/noidroid/__init__.py
+    version       not determined  importable from source, not installed as a distribution
+    transport     ok              AF_UNIX on linux
+      · limit       Windows is excluded: the socket is hardcoded (#32)
+
+  CAPTURE SURFACES
+    anthropic     blocked         0.122.0 is installed, and 1 request surface present here is not hooked
+      · NOT hooked  anthropic._base_client.AsyncAPIClient.request (#33)
+      · hooked      anthropic._base_client.SyncAPIClient.request
+
+  THE PROGRAM
+    clock         not captured    2 sites in the 1 file scanned reach the clock or randomness (#30)
+      · agent.py:9  uuid.uuid4
+      · agent.py:9  time.time
+    subprocess    not captured    2 sites in the 1 file scanned start a child process (#31)
+
+  THE FENCE
+    egress        ok              installed on socket.socket.connect, and a connect to 203.0.113.1:80 was refused
+      · blind to    subprocesses (#31), C extensions that bypass Python's socket module, …
+```
+
+The five words are the feature, and they are not interchangeable. **ok** — we looked,
+and it is covered. **absent** — we looked, and there is nothing here to cover. **not
+captured** — we looked, and it is not, with the issue that tracks it. **not
+determined** — we could not look, which is never a pass. **blocked** — a recording made
+now would be refused or would miss something, and the command exits non-zero.
+
+Everything in it is something the tool did rather than something it intends: the
+surfaces are read back out of the SDK *after* running the real installer, so a class
+this build has never heard of shows up unhooked instead of being invisible to both; the
+fence is ticked only after it actually refused a connection to a reserved address. The
+scan of your program reads the files you named and does not follow imports, so a clean
+one reports *not determined* rather than a tick it did not earn.
+
+There is no score, no percentage and no readiness grade. A number nobody measured is
+the one failure this project cannot survive, and a green tick the tool did not earn is
+worse than no doctor at all.
 
 ## Integrating it by hand
 

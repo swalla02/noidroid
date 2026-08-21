@@ -70,6 +70,10 @@ jobs:
             echo "::error::auto-capture test skipped on the job that installs the SDK"
             exit 1
           fi
+          if grep -q "SKIP: doctor SDK test" test-output.txt; then
+            echo "::error::doctor SDK test skipped on the job that installs the SDK"
+            exit 1
+          fi
 
   test-without-browser:
     name: tests (no browser installed)
