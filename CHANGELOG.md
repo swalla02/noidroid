@@ -103,6 +103,20 @@ how the package version relates to `STEP_VERSION`, the on-disk object format.
   stand-in provider that catches this compresses whether or not it was asked to,
   because a recorder that only copes when it opted in is one that lies the first time
   a provider changes its mind. (#56)
+- **A trajectory the pre-#56 proxy already mangled still read back as faithful.** #56
+  stopped new recordings holding U+FFFD; it did nothing for the ones already on disk,
+  and a replay of one re-derives the same addresses because the mangled body is
+  exactly what was recorded — hash equality proving nothing about content nobody can
+  read. `noidroid verify` now also reads every recorded value back and reports one of
+  three: `intact`, `suspect` (a replacement character is present, which a provider can
+  legitimately send — never called corrupt on that alone), or `lost` (a run of
+  replacement characters, a body that is mostly one, a body opening with what a gzip
+  header becomes under a lossy decode, or a declared `application/json` body that does
+  not parse — evidence weighed together, not a single trigger). `noidroid replay`
+  carries the same reading: a trajectory whose source recording is `lost` now reports
+  `unverifiable`, never `faithful`, because the claim is not available rather than
+  false. Nothing is repaired — the original bytes are gone — so the only outcome is
+  that the recording stops looking real. (#70)
 - **`--inject all` was in the help and never in the binary.** It promised to branch
   every failure in turn and refused the moment anyone tried it. The help now names
   only what works, and a test through the real binary keeps it that way — a tool whose

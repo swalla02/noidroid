@@ -18,6 +18,7 @@ pub mod engine;
 pub mod env;
 pub mod error;
 pub mod hash;
+pub mod intact;
 pub mod model;
 pub mod proto;
 pub mod repo;
