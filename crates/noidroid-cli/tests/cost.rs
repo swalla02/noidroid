@@ -10,6 +10,7 @@
 //! dollar figure appears only when the caller supplied the price, or when the tokens
 //! bought were zero — which costs nothing at every price there is.
 
+use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -154,6 +155,228 @@ fn a_dollar_figure_never_appears_without_a_price_somebody_supplied() {
     assert!(
         !ok,
         "a price that is not two numbers should be refused: {bad}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A stand-in provider that answers with a server-sent event stream, which is what a
+/// provider sends when the client asked for `stream: true`. The usage is never in one
+/// JSON object: `message_start` reports the input, `message_delta` reports the output
+/// at the end. Run with `silent` it reports neither, which is the other case `cost`
+/// has to survive — a call it cannot account for.
+///
+/// It binds port zero and prints what it got, so two of these can run at once.
+const STREAMING_PROVIDER: &str = r#"
+import json, sys
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+COUNTED = sys.argv[1] == "counted"
+
+def events():
+    message = {"id": "msg_local", "type": "message", "role": "assistant",
+               "model": "stand-in-model", "content": [], "stop_reason": None,
+               "stop_sequence": None}
+    if COUNTED:
+        message["usage"] = {"input_tokens": 11, "output_tokens": 0}
+    yield "message_start", {"type": "message_start", "message": message}
+    yield "content_block_start", {"type": "content_block_start", "index": 0,
+        "content_block": {"type": "text", "text": ""}}
+    for piece in ["one ", "two ", "three"]:
+        yield "content_block_delta", {"type": "content_block_delta", "index": 0,
+            "delta": {"type": "text_delta", "text": piece}}
+    yield "content_block_stop", {"type": "content_block_stop", "index": 0}
+    stop = {"type": "message_delta",
+            "delta": {"stop_reason": "end_turn", "stop_sequence": None}}
+    if COUNTED:
+        stop["usage"] = {"output_tokens": 6}
+    yield "message_delta", stop
+    yield "message_stop", {"type": "message_stop"}
+
+class Handler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+    def log_message(self, *a): pass
+    def do_POST(self):
+        self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Transfer-Encoding", "chunked")
+        self.end_headers()
+        for name, payload in events():
+            frame = ("event: %s\ndata: %s\n\n" % (name, json.dumps(payload))).encode()
+            self.wfile.write(b"%X\r\n" % len(frame) + frame + b"\r\n")
+            self.wfile.flush()
+        self.wfile.write(b"0\r\n\r\n")
+        self.wfile.flush()
+
+server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+print(server.server_address[1], flush=True)
+server.serve_forever()
+"#;
+
+/// An agent that streams, knows nothing about us, and reads its endpoint from the
+/// environment the way every provider SDK does. Deliberately not the Anthropic SDK:
+/// what is under test is what `cost` can read back out of the recording, and a plain
+/// client keeps the test running on the jobs that install no SDK.
+const STREAMING_AGENT: &str = r#"
+import json, os, urllib.request
+
+endpoint = os.environ["ANTHROPIC_BASE_URL"].rstrip("/") + "/v1/messages"
+payload = json.dumps({
+    "model": "stand-in-model", "max_tokens": 64, "stream": True,
+    "messages": [{"role": "user", "content": "count to three"}],
+}).encode()
+request = urllib.request.Request(
+    endpoint, data=payload, method="POST",
+    headers={"content-type": "application/json"},
+)
+
+text = []
+with urllib.request.urlopen(request) as response:
+    for line in response:
+        line = line.decode("utf-8").strip()
+        if not line.startswith("data:"):
+            continue
+        event = json.loads(line[len("data:"):])
+        if event.get("type") == "content_block_delta":
+            text.append(event["delta"]["text"])
+
+with open("answer.txt", "w", encoding="utf-8") as handle:
+    handle.write("".join(text))
+"#;
+
+struct Provider(std::process::Child);
+
+impl Drop for Provider {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// Start the stand-in provider and wait for it to say which port it bound.
+fn provider(script: &Path, mode: &str) -> (Provider, u16) {
+    let mut child = Command::new("python3")
+        .arg(script)
+        .arg(mode)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("the stand-in provider should start");
+    let mut line = String::new();
+    std::io::BufReader::new(child.stdout.take().expect("stdout is piped"))
+        .read_line(&mut line)
+        .expect("the provider prints the port it bound");
+    let port = line.trim().parse().expect("a port number");
+    (Provider(child), port)
+}
+
+/// Record one streamed call through the real proxy, and return the working directory.
+///
+/// `--allow-gaps` because `--proxy` also puts the automatic-capture bootstrap on the
+/// agent's path, and this agent is a plain HTTP client that capture has nothing to
+/// say about. The proxy is what is recording here.
+fn recorded_stream(tag: &str, mode: &str) -> PathBuf {
+    let dir = workdir(tag);
+    let script = dir.join("provider.py");
+    std::fs::write(&script, STREAMING_PROVIDER).unwrap();
+    let agent = dir.join("agent.py");
+    std::fs::write(&agent, STREAMING_AGENT).unwrap();
+
+    let (_provider, port) = provider(&script, mode);
+    let (out, ok) = noidroid(
+        &dir,
+        &[
+            "run",
+            "--proxy",
+            &format!("http://127.0.0.1:{port}"),
+            "--allow-gaps",
+            "--",
+            "python3",
+            agent.to_str().unwrap(),
+        ],
+    );
+    assert!(ok, "recording the stream failed: {out}");
+    assert_eq!(
+        std::fs::read_to_string(dir.join(".noidroid/workspaces/run-1/answer.txt")).unwrap(),
+        "one two three",
+        "the agent should have received the whole stream"
+    );
+    dir
+}
+
+/// A streamed response reports its tokens across `message_start` and `message_delta`,
+/// so there is no single JSON object to read them out of — and `cost` used to skip the
+/// call entirely rather than fail on it. A skipped call is the dangerous kind of wrong:
+/// the total still prints, and nothing in it says a call is missing.
+#[test]
+fn a_streamed_call_is_counted_from_the_events_it_recorded() {
+    let dir = recorded_stream("streamed", "counted");
+
+    let (out, ok) = noidroid(&dir, &["cost", "run-1"]);
+    assert!(ok, "{out}");
+    assert!(
+        out.contains("11 in / 6 out"),
+        "the input came from message_start and the output from message_delta; both \
+         were recorded: {out}"
+    );
+    assert!(
+        out.contains("1 executed"),
+        "the recording really made the call: {out}"
+    );
+    assert!(
+        out.contains("stand-in-model"),
+        "the model that answered is named in the stream too: {out}"
+    );
+    assert!(
+        !out.contains("unaccounted"),
+        "this call's usage was recorded and could be read: {out}"
+    );
+
+    let (list, ok) = noidroid(&dir, &["cost"]);
+    assert!(ok, "{list}");
+    assert!(
+        !list.contains("no model calls"),
+        "the streamed call must not vanish from the side-by-side listing: {list}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The invariant, stated the other way round: some streams report no usage at all —
+/// an OpenAI stream nobody asked `include_usage` of, a provider that stopped early.
+/// Those cannot be counted, and must therefore be *named*. Counting them as zero, or
+/// leaving them out of a total that then reads as complete, is the failure this tool
+/// exists to refuse.
+#[test]
+fn a_streamed_call_is_counted_or_named_but_never_silently_dropped() {
+    let dir = recorded_stream("unreadable", "silent");
+
+    let (out, ok) = noidroid(&dir, &["cost", "run-1"]);
+    assert!(ok, "{out}");
+    assert!(
+        out.contains("unaccounted"),
+        "a call whose usage cannot be read has to be named as unaccounted: {out}"
+    );
+    assert!(
+        out.contains("1 model call"),
+        "and counted, so the reader knows how much is missing: {out}"
+    );
+    assert!(
+        !out.contains("$0.00"),
+        "a call nothing could read is not a call that cost nothing: {out}"
+    );
+
+    let (list, ok) = noidroid(&dir, &["cost"]);
+    assert!(ok, "{list}");
+    assert!(
+        !list.contains("no model calls"),
+        "the listing said there were no model calls, and there was one: {list}"
+    );
+    assert!(
+        list.contains("run-1"),
+        "the trajectory should still be listed: {list}"
     );
 
     let _ = std::fs::remove_dir_all(&dir);

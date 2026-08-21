@@ -96,6 +96,20 @@ how the package version relates to `STEP_VERSION`, the on-disk object format.
   `Store::put`'s scratch name and `watch_slice`'s fixture directory. A new test,
   `a_provider_never_adopts_a_server_it_did_not_start`, starts two providers back to
   back and proves that killing the second one only takes down its own port. (#74)
+- **A streamed call had no single JSON object for `cost` to read, so it vanished from
+  the total instead of being reported unaccounted for.** #45 made streaming pass
+  through as it arrives; a provider that streams reports usage split across events —
+  Anthropic's input count on `message_start`, its output count on `message_delta`;
+  OpenAI's whole `usage` block once, on the final chunk, only with
+  `stream_options.include_usage`. None of that is the one `usage` object `cost`
+  already knew how to read, so the call was silently skipped: not zero, not named,
+  just gone, and the total it fed into looked complete. `cost` now reads a recorded
+  event stream the same way it reads a plain response — recognising the events by the
+  shape a model's own stream actually uses, not by the request's target name — and
+  takes the last value reported for each field, which is correct for both providers'
+  streaming conventions. A stream that never reports usage at all is still counted,
+  named `unaccounted`, and kept out of every `$0.00` the tool would otherwise print:
+  a call nothing could read is not a call that cost nothing. (#62)
 - **A branch whose program died printed a timeline that just stopped.** `noidroid log`
   called it `aborted` and `noidroid branch` never did, so the operator had to infer the
   crash from a missing `finish` row — the inference this tool exists to remove, and the
