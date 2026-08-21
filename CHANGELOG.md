@@ -7,6 +7,17 @@ how the package version relates to `STEP_VERSION`, the on-disk object format.
 
 ## [Unreleased]
 
+### Changed
+
+- **A divergence report now names an insertion, not just the fields that differ.** It
+  could already say "this call is recorded at step N, it looks like interactions were
+  removed" and had no symmetric sentence: add a call and the reader got a target and an
+  argument diff and had to work out what moved. When what the run wants appears nowhere
+  in the recording, the report says it looks like an interaction was added there — and
+  says in the next breath that a rewritten interaction looks identical from one
+  mismatch, because it does. Matching is still positional and divergence is still
+  fatal; only the sentence changed. (#34)
+
 ### Fixed
 
 - **Two writers of the same object raced, and the loser said only `No such file or

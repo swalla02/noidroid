@@ -39,6 +39,11 @@ with open("notes.txt", "w", encoding="utf-8") as handle:
 
 nd.call("world.read", lambda: touch("read"), args={"variant": variant})
 
+# An interaction the recording has never seen, at a position the recording already
+# uses for something else.
+if os.environ.get("INSERT"):
+    nd.call("world.insert", lambda: touch("insert"), args={})
+
 # A mediated write, so replaying this step restores the workspace underneath a
 # process that is still running in it.
 nd.call("world.stage", lambda: touch("stage"), args={}, effect="write")
@@ -374,6 +379,40 @@ fn a_changed_program_is_reported_rather_than_papered_over() {
             .any(|d| d.kind == DivergenceKind::KeyMismatch),
         "a different interaction must be reported as a key mismatch, got {:?}",
         report.divergences
+    );
+    assert!(!report.faithful());
+}
+
+#[test]
+fn an_inserted_call_is_reported_as_an_insertion() {
+    let f = Fixture::new("insertion");
+    let recorded = f.record();
+
+    // Same program, one extra mediated call ahead of a recorded one. Positional
+    // matching sees a mismatch at the step the extra call landed on.
+    let report = f.replay(&recorded, &[("INSERT", "1")]);
+
+    let mismatch = report
+        .divergences
+        .iter()
+        .find(|d| d.kind == DivergenceKind::KeyMismatch)
+        .unwrap_or_else(|| {
+            panic!(
+                "an inserted call must be reported, got {:?}",
+                report.divergences
+            )
+        });
+    assert!(
+        mismatch.detail.contains("appears nowhere in the recording")
+            && mismatch.detail.contains("added here"),
+        "the report has to name the insertion, not just the fields that differ, got {}",
+        mismatch.detail
+    );
+    assert!(
+        mismatch.detail.contains("cannot tell the two apart"),
+        "one mismatch cannot distinguish an insertion from a rewrite, and the report \
+         must not pretend otherwise, got {}",
+        mismatch.detail
     );
     assert!(!report.faithful());
 }

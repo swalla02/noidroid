@@ -1314,6 +1314,22 @@ fn describe_mismatch(
         .any(|(_, step)| actions_agree(&step.action, incoming))
     {
         lines.push("this call already happened earlier in the recording".to_string());
+    } else {
+        // Nothing anywhere in the recording matches what the run wants, so the run is
+        // doing something the recording never did. That is what an inserted
+        // interaction looks like from here — and it is also exactly what a rewritten
+        // one looks like, because positional matching gets one mismatch either way.
+        // Name the likely reading, then say plainly that it is not established.
+        lines.push(
+            "this interaction appears nowhere in the recording; it looks like it was \
+             added here"
+                .to_string(),
+        );
+        lines.push(
+            "a rewritten interaction looks the same from here — one mismatch cannot \
+             tell the two apart"
+                .to_string(),
+        );
     }
 
     if lines.is_empty() {
