@@ -23,6 +23,7 @@ pub mod proto;
 pub mod repo;
 pub mod store;
 pub mod tree;
+pub mod volatility;
 
 pub use env::{Environment, Grip};
 pub use error::{Doing, Error, Result};

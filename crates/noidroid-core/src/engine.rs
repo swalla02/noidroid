@@ -30,7 +30,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde_json::{json, Value};
 
 use crate::checkpoint;
-use crate::env::{Environment, Grip, Situation, State, Workspace};
+use crate::env::{Environment, Grip, Situation, State, Workspace, WORLD_DIR};
 use crate::error::{Doing, Error, Result};
 use crate::hash::Digest;
 use crate::model::{
@@ -40,6 +40,7 @@ use crate::model::{
 use crate::proto::{Request, Response};
 use crate::repo::Repo;
 use crate::tree;
+use crate::volatility;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 const POLL: Duration = Duration::from_millis(5);
@@ -1027,6 +1028,84 @@ impl<'a> Session<'a> {
         format!("{}:{kind}:{target}", self.index)
     }
 
+    /// Say what actually differs in the world, and — when a difference is a value no
+    /// re-execution could have reproduced — name it and name the remedy.
+    ///
+    /// Two tree addresses is a true report and an unreadable one. This is the state
+    /// mismatch's version of [`describe_mismatch`]. It is deliberately quiet when it
+    /// has nothing to say: a guess about which byte became which is the fuzzy
+    /// matching this project refuses everywhere else.
+    fn describe_state(&self, recorded: &Digest, observed: &Digest) -> Result<String> {
+        /// Enough to see the shape of the change without burying the divergence.
+        const SHOWN: usize = 6;
+
+        let was = tree::read(recorded, &self.repo.store)?;
+        let now = tree::read(observed, &self.repo.store)?;
+        let left: BTreeMap<&str, &Digest> = was
+            .entries
+            .iter()
+            .map(|e| (e.path.as_str(), &e.blob))
+            .collect();
+        let right: BTreeMap<&str, &Digest> = now
+            .entries
+            .iter()
+            .map(|e| (e.path.as_str(), &e.blob))
+            .collect();
+        let changed = tree::diff(&was, &now);
+
+        let mut lines: Vec<String> = Vec::new();
+        for (path, change) in changed.iter().take(SHOWN) {
+            let what = match change {
+                tree::Change::Added => "not in the recording",
+                tree::Change::Removed => "recorded, absent now",
+                tree::Change::Modified => "differs",
+            };
+            // A `.world/` entry is a program's report about a world we cannot see,
+            // not a file anyone can go and edit. Saying "differs" about it without
+            // saying that would send the reader looking for a path that is not there.
+            let kind = if is_reported_world(path) {
+                " (a world the program reports, not a file)"
+            } else {
+                ""
+            };
+            lines.push(format!("{path}: {what}{kind}"));
+        }
+        if changed.len() > SHOWN {
+            lines.push(format!("… and {} more", changed.len() - SHOWN));
+        }
+
+        // Only the workspace: a reported world has no bytes we could advise anyone
+        // to write differently.
+        let mut findings = Vec::new();
+        for (path, change) in &changed {
+            if !findings.is_empty() || *change != tree::Change::Modified || is_reported_world(path)
+            {
+                continue;
+            }
+            let (Some(before), Some(after)) = (left.get(path.as_str()), right.get(path.as_str()))
+            else {
+                continue;
+            };
+            findings = volatility::in_text(
+                path,
+                &self.repo.store.get(before)?,
+                &self.repo.store.get(after)?,
+            );
+        }
+        for finding in &findings {
+            lines.push(finding.line());
+            lines.push(format!("  {}", finding.source.why()));
+        }
+        if !findings.is_empty() {
+            lines.push(volatility::advice_for_workspace().to_string());
+        }
+
+        if lines.is_empty() {
+            return Ok(String::new());
+        }
+        Ok(format!("\n      {}", lines.join("\n      ")))
+    }
+
     /// Snapshot the workspace, build the step, store it, and — when reconstructing —
     /// check that it addresses the same object the recording did.
     fn commit(
@@ -1110,14 +1189,20 @@ impl<'a> Session<'a> {
                 if observed.root == rec.state_root {
                     self.report.state_verified += 1;
                 } else {
+                    let detail = format!(
+                        "the world hashes to {} but the recording says {}{}",
+                        observed.root.short(),
+                        rec.state_root.short(),
+                        // Best effort, and deliberately: the divergence is the
+                        // finding, the explanation is commentary, and commentary
+                        // that can fail must never take the finding down with it.
+                        self.describe_state(&rec.state_root, &observed.root)
+                            .unwrap_or_default()
+                    );
                     self.report.divergences.push(Divergence {
                         index: self.index,
                         kind: DivergenceKind::StateMismatch,
-                        detail: format!(
-                            "the world hashes to {} but the recording says {}",
-                            observed.root.short(),
-                            rec.state_root.short()
-                        ),
+                        detail,
                     });
                 }
                 observed.root
@@ -1243,6 +1328,10 @@ fn describe_mismatch(
     index: u64,
 ) -> String {
     let mut lines: Vec<String> = Vec::new();
+    // Values that changed for a reason that has nothing to do with what the program
+    // did. Found separately from the field diff because they change what the rest of
+    // this report is allowed to conclude.
+    let mut unreproducible: Vec<volatility::Finding> = Vec::new();
 
     match (recorded, incoming) {
         (
@@ -1267,7 +1356,18 @@ fn describe_mismatch(
                     now_effect.label()
                 ));
             }
-            lines.extend(diff_values("args", was_args, now_args));
+            unreproducible = volatility::find("args", was_args, now_args);
+            // A finding says everything the field diff for the same path says and
+            // then why, so the diff line for that path would only be read twice.
+            let superseded: Vec<String> = unreproducible
+                .iter()
+                .map(|f| format!("{}: ", f.path))
+                .collect();
+            lines.extend(
+                diff_values("args", was_args, now_args)
+                    .into_iter()
+                    .filter(|line| !superseded.iter().any(|p| line.starts_with(p))),
+            );
         }
         (
             Action::Decide {
@@ -1293,10 +1393,22 @@ fn describe_mismatch(
         )),
     }
 
+    // A clock or a fresh id in the arguments is the cause a positional report
+    // explains worst: every field diff is correct, nothing in the recording matches,
+    // and the reader is left to notice that one of the numbers is a timestamp. Say
+    // it — and skip the guesswork below, which would otherwise announce an inserted
+    // interaction that was never inserted.
+    if !unreproducible.is_empty() {
+        for finding in &unreproducible {
+            lines.push(finding.line());
+            lines.push(format!("  {}", finding.source.why()));
+        }
+        lines.push(volatility::advice_for_arguments(&unreproducible));
+    }
     // The most common cause of a mismatch is an inserted or removed interaction, not
     // a changed one. If what the run wants is sitting further along the recording,
     // say so — it turns a puzzle into a one-line explanation.
-    if let Some(found) = chain
+    else if let Some(found) = chain
         .iter()
         .enumerate()
         .skip(index as usize + 1)
@@ -1336,6 +1448,11 @@ fn describe_mismatch(
         return "the actions differ".to_string();
     }
     format!("\n      {}", lines.join("\n      "))
+}
+
+/// Whether a tree path holds a reported world rather than a workspace file.
+fn is_reported_world(path: &str) -> bool {
+    path == WORLD_DIR || path.starts_with(&format!("{WORLD_DIR}/"))
 }
 
 /// Field-by-field for objects; whole-value otherwise.

@@ -33,6 +33,20 @@ how the package version relates to `STEP_VERSION`, the on-disk object format.
 
 ### Changed
 
+- **A divergence caused by a clock or a random id now says so.** A timestamp or a UUID
+  in a call argument makes every replay diverge, and the report named two long values
+  and left the reader to notice that one of them was a clock — then guessed, wrongly,
+  that an interaction had been inserted, because nothing in the recording matches a
+  value that is new every run. The argument is now named at its full path, the source
+  is read off the value (`unix nanoseconds`, `ISO-8601`, a UUID, a random token) and
+  the remedy comes with the key already filled in: `volatile=["sent_at"]`, or route
+  the value through `nd.call()`. The same value written into the watched workspace
+  produces a `state_mismatch` that `volatile=` cannot reach at all, so that report now
+  names the file, names the value inside it, and says plainly that `volatile=` is not
+  the fix and why — the workspace is hashed whole. Detection only: the clock is not
+  frozen and nothing is suppressed. A freeze covers most clocks and not all, which
+  trades a loud mismatch for a quietly wrong value, and every claim here is worded as
+  a reading of the evidence because that is all it is. (#30)
 - **A divergence report now names an insertion, not just the fields that differ.** It
   could already say "this call is recorded at step N, it looks like interactions were
   removed" and had no symmetric sentence: add a call and the reader got a target and an
