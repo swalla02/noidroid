@@ -30,6 +30,16 @@ how the package version relates to `STEP_VERSION`, the on-disk object format.
   failure reading, writing, listing or pruning now names the operation and the path,
   so a `NotFound` in CI says which file it could not find. This is what made the macOS
   failure in #44 unreadable for two runs. (#44)
+- **An agent behaved differently under recording than outside it.** The proxy read a
+  whole response before writing a byte back, so a streamed completion arrived as one
+  block at the end instead of as tokens. The bytes were identical and the recording
+  faithful, which is what made it easy to miss: an agent that only times out when
+  recorded is not the agent you set out to record. A `text/event-stream` response is
+  now relayed chunk by chunk while the concatenation is kept for the trajectory.
+  Everything else still buffers, because a JSON body is one value that exists all at
+  once. The engine hears about a call only when it completes, so a passed-through
+  stream is recorded after its last byte has reached the agent — fine for a recording,
+  and to be reconsidered if a replay ever streams. (#45)
 - **The fence blocked calls the engine had authorised.** Egress is now permitted for
   the body of a call the engine answered `execute` to — and nowhere else, on the
   thread that call runs on. A plain replay authorises nothing, so the window never

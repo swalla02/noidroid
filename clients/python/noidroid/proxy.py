@@ -24,10 +24,15 @@ response. **What it does not**: anything the agent does that is not that request
 files it writes, commands it runs, other services it calls. Those are invisible here,
 and a replay will not reproduce them.
 
-**A streamed response is buffered.** The whole thing is read before a single byte goes
-back, so the agent gets a complete answer rather than an incremental one. The content
-is identical and the recording is faithful; what changes is the timing, which for a
-long generation can be the difference between a progress bar and a client timeout.
+**A server-sent event stream is passed through as it arrives**, chunk by chunk, while
+the concatenation is kept for the trajectory. An agent under recording therefore sees
+its tokens on the same schedule as one that is not being recorded — which matters,
+because an agent that times out only when recorded is not the agent you meant to
+record. Everything else is still read in full before it is written back.
+
+The engine hears about a call only once it completes, so a passed-through stream is
+recorded after its last byte has already reached the agent. That is fine for a
+recording; it would have to be reconsidered if a replay ever streamed.
 
 No TLS interception. The agent is pointed at a plain local address and the proxy makes
 the upstream call itself, so nothing has to trust a forged certificate.
@@ -60,10 +65,25 @@ SKIP_REQUEST_HEADERS = {"host", "connection", "proxy-connection", "keep-alive",
 SKIP_RESPONSE_HEADERS = {"connection", "keep-alive", "transfer-encoding", "upgrade",
                          "content-encoding", "content-length"}
 
+#: How much to ask upstream for at a time; it returns whatever has arrived.
+CHUNK = 64 * 1024
+
 
 def _target(path: str) -> str:
     """Name a call after its endpoint, so a timeline reads as something recognisable."""
     return "http" + path.split("?", 1)[0].replace("/", ".").rstrip(".")
+
+
+def _is_stream(headers: dict) -> bool:
+    """Is this the one content type where arrival time is part of the behaviour?
+
+    Only server-sent events. A JSON body is one value that exists all at once, and
+    handing it over in pieces buys the agent nothing.
+    """
+    for key, value in headers.items():
+        if key.lower() == "content-type":
+            return value.split(";", 1)[0].strip().lower() == "text/event-stream"
+    return False
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -93,6 +113,11 @@ class _Handler(BaseHTTPRequestHandler):
         except ValueError:
             body = {"__raw__": raw.decode("utf-8", "replace")}
 
+        # Set by perform() when the response has already gone back to the agent a
+        # chunk at a time. Only a recording gets there: a reconstruction serves the
+        # body from the trajectory, so perform() is never called.
+        passed_through = []
+
         def perform():
             request = urllib.request.Request(
                 self.upstream.rstrip("/") + self.path,
@@ -102,9 +127,13 @@ class _Handler(BaseHTTPRequestHandler):
             )
             try:
                 with urllib.request.urlopen(request) as response:
-                    payload = response.read()
                     status = response.status
                     got = dict(response.headers)
+                    if _is_stream(got):
+                        payload = self._pass_through(status, got, response)
+                        passed_through.append(True)
+                    else:
+                        payload = response.read()
             except urllib.error.HTTPError as failure:
                 # A provider error is part of what happened, not a reason to stop.
                 payload = failure.read()
@@ -127,6 +156,9 @@ class _Handler(BaseHTTPRequestHandler):
                 effect=READ,
             )
 
+        if passed_through:
+            return  # the agent already has every byte of it
+
         payload = (recorded.get("body") or "").encode("utf-8")
         self.send_response(int(recorded.get("status", 200)))
         for key, value in (recorded.get("headers") or {}).items():
@@ -135,6 +167,34 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
         self.wfile.write(payload)
+
+    def _pass_through(self, status: int, headers: dict, response) -> bytes:
+        """Relay a stream while it is still running, and return all of what went by.
+
+        Chunked, because the length of a generation is not known until it ends, and
+        the whole point is to not wait for that. Flushed after every write: a chunk
+        sitting in our buffer is the same delay we are removing.
+        """
+        self.send_response(status)
+        for key, value in headers.items():
+            if key.lower() not in SKIP_RESPONSE_HEADERS:
+                self.send_header(key, value)
+        self.send_header("Transfer-Encoding", "chunked")
+        self.end_headers()
+
+        seen = []
+        while True:
+            # read1, so a chunk goes out when it arrives rather than when enough of
+            # them have arrived to fill a buffer.
+            chunk = response.read1(CHUNK)
+            if not chunk:
+                break
+            seen.append(chunk)
+            self.wfile.write(b"%X\r\n" % len(chunk) + chunk + b"\r\n")
+            self.wfile.flush()
+        self.wfile.write(b"0\r\n\r\n")
+        self.wfile.flush()
+        return b"".join(seen)
 
     # Anthropic and OpenAI between them use more than two verbs — files and batches
     # are deleted, assistants are patched. An unhandled method would 501 here, which
