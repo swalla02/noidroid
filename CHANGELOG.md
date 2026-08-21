@@ -53,6 +53,21 @@ how the package version relates to `STEP_VERSION`, the on-disk object format.
   a log file nobody was told about. When the program said nothing on the way out, that
   is what it says; the reason is never guessed at. This was never specific to
   `--inject` — `--decide`, `--result` and `--fail` were all equally silent. (#58)
+- **The proxy recorded a gzipped reply as a wall of replacement characters.** It
+  forwarded the agent's `accept-encoding` upstream, so a real provider compressed;
+  it then stripped `Content-Encoding` and passed the compressed bytes through, so the
+  agent could not parse them — and `decode("utf-8", "replace")` wrote them into the
+  trajectory with every unreadable byte swapped for U+FFFD. The recording was lossy,
+  irreversible, and said nothing about it, which is the one failure this project
+  cannot survive: not a crash, a trajectory that looks real. The proxy now asks
+  upstream only for `identity`, inflates gzip or deflate if a provider compresses
+  anyway, and records the plain body — so the stripped header is finally an honest
+  description of the bytes under it. Anything it still cannot read back, another
+  content coding or a body that is not UTF-8, fails the call with the reason, in the
+  agent's error and in the trajectory, instead of being written down wrong. The
+  stand-in provider that catches this compresses whether or not it was asked to,
+  because a recorder that only copes when it opted in is one that lies the first time
+  a provider changes its mind. (#56)
 - **`--inject all` was in the help and never in the binary.** It promised to branch
   every failure in turn and refused the moment anyone tried it. The help now names
   only what works, and a test through the real binary keeps it that way — a tool whose
