@@ -24,6 +24,14 @@ response. **What it does not**: anything the agent does that is not that request
 files it writes, commands it runs, other services it calls. Those are invisible here,
 and a replay will not reproduce them.
 
+A trajectory holds bodies as text, so a body that is not text cannot go into one. We
+ask the provider for `identity` rather than the codings the agent's SDK would have
+offered, and inflate gzip or deflate if it compresses anyway; anything else — another
+content coding, a body that is not valid UTF-8 — fails the call with the reason
+instead of being written down with the bad bytes replaced. A recording you cannot read
+back is only useful if it admits that, and one that quietly swaps the unreadable parts
+for U+FFFD does not.
+
 **A server-sent event stream is passed through as it arrives**, chunk by chunk, while
 the concatenation is kept for the trajectory. An agent under recording therefore sees
 its tokens on the same schedule as one that is not being recorded — which matters,
@@ -49,6 +57,7 @@ import sys
 import threading
 import urllib.error
 import urllib.request
+import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import READ, connect
@@ -59,19 +68,53 @@ BASE_URL_VARS = {
     "openai": "OPENAI_BASE_URL",
 }
 
-#: Not forwarded upstream: hop-by-hop, or ours to set.
+#: Not forwarded upstream: hop-by-hop, or ours to set. `accept-encoding` is ours
+#: because we are the one that has to read the answer -- see ACCEPT_ENCODING.
 SKIP_REQUEST_HEADERS = {"host", "connection", "proxy-connection", "keep-alive",
-                        "transfer-encoding", "upgrade", "content-length"}
+                        "transfer-encoding", "upgrade", "content-length",
+                        "accept-encoding"}
 SKIP_RESPONSE_HEADERS = {"connection", "keep-alive", "transfer-encoding", "upgrade",
                          "content-encoding", "content-length"}
+
+#: What we ask the provider for, in place of whatever the agent asked for. The
+#: agent's SDK offers `gzip, deflate, br, zstd`; we can inflate two of those, and
+#: asking for a coding we cannot read is asking to be handed something we can only
+#: mangle. The SDK is none the wiser: it decompresses transparently, so identity
+#: reaches it as the same object either way.
+ACCEPT_ENCODING = "identity"
+
+#: Content codings we can turn back into the bytes the provider meant, and the zlib
+#: window that does it. A provider that compresses regardless of what we asked for
+#: is still readable; one that uses anything else is refused, not guessed at.
+INFLATE = {
+    "gzip": 16 + zlib.MAX_WBITS,
+    "x-gzip": 16 + zlib.MAX_WBITS,
+    "deflate": zlib.MAX_WBITS,
+}
 
 #: How much to ask upstream for at a time; it returns whatever has arrived.
 CHUNK = 64 * 1024
 
 
+class Unrecordable(Exception):
+    """This body cannot be written into a trajectory without lying about it.
+
+    Raised instead of storing something lossy. A recording that cannot be read back
+    is worth less than nothing if it does not say so: the caller turns this into a
+    recorded error and a 502, so the gap is in the trajectory under its own name.
+    """
+
+
 def _target(path: str) -> str:
     """Name a call after its endpoint, so a timeline reads as something recognisable."""
     return "http" + path.split("?", 1)[0].replace("/", ".").rstrip(".")
+
+
+def _header(headers: dict, name: str) -> str:
+    for key, value in headers.items():
+        if key.lower() == name:
+            return value.strip()
+    return ""
 
 
 def _is_stream(headers: dict) -> bool:
@@ -80,10 +123,56 @@ def _is_stream(headers: dict) -> bool:
     Only server-sent events. A JSON body is one value that exists all at once, and
     handing it over in pieces buys the agent nothing.
     """
-    for key, value in headers.items():
-        if key.lower() == "content-type":
-            return value.split(";", 1)[0].strip().lower() == "text/event-stream"
-    return False
+    kind = _header(headers, "content-type").split(";", 1)[0].strip().lower()
+    return kind == "text/event-stream"
+
+
+def _inflate(payload: bytes, headers: dict) -> bytes:
+    """Undo the content coding, or refuse to pretend there was not one.
+
+    The coding is a property of this hop, not of what the provider said, so the
+    trajectory holds the plain body and the header stays stripped -- which is then
+    an honest description of the bytes underneath it. Recording the compressed form
+    instead would put a body in the trajectory that nobody can read without knowing
+    a header we threw away, and would make the content address depend on the
+    provider's compression level.
+    """
+    coding = _header(headers, "content-encoding").lower()
+    if coding in ("", "identity"):
+        return payload
+    if coding not in INFLATE:
+        raise Unrecordable(
+            f"the provider answered with content-encoding {coding!r}, which this "
+            f"proxy cannot decode. Recording it would store bytes that no longer "
+            f"say how to read them."
+        )
+    try:
+        return zlib.decompress(payload, INFLATE[coding])
+    except zlib.error:
+        # Some servers send raw deflate under the same name; RFC 9110 allows both.
+        if coding == "deflate":
+            try:
+                return zlib.decompress(payload, -zlib.MAX_WBITS)
+            except zlib.error:
+                pass
+        raise Unrecordable(
+            f"the provider labelled its body {coding!r} but it did not decompress"
+        ) from None
+
+
+def _text(payload: bytes, what: str) -> str:
+    """Decode for the trajectory, strictly.
+
+    `errors="replace"` is how a recording ends up full of U+FFFD that nothing in it
+    admits to. Bytes we cannot represent are a gap, and a gap gets said out loud.
+    """
+    try:
+        return payload.decode("utf-8")
+    except UnicodeDecodeError as failure:
+        raise Unrecordable(
+            f"the {what} is not valid UTF-8 (byte {failure.start} of "
+            f"{len(payload)}), so it cannot be recorded without losing bytes"
+        ) from None
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -104,6 +193,7 @@ class _Handler(BaseHTTPRequestHandler):
             k: v for k, v in self.headers.items()
             if k.lower() not in SKIP_REQUEST_HEADERS
         }
+        headers["Accept-Encoding"] = ACCEPT_ENCODING
 
         # The body is what identifies the call, so it is what a replay matches on.
         # Parsed when it is JSON, because a dict diffs field by field and a blob does
@@ -111,7 +201,10 @@ class _Handler(BaseHTTPRequestHandler):
         try:
             body = json.loads(raw) if raw else None
         except ValueError:
-            body = {"__raw__": raw.decode("utf-8", "replace")}
+            try:
+                body = {"__raw__": _text(raw, "request body")}
+            except Unrecordable as refusal:
+                return self._refuse(refusal)
 
         # Set by perform() when the response has already gone back to the agent a
         # chunk at a time. Only a recording gets there: a reconstruction serves the
@@ -130,31 +223,49 @@ class _Handler(BaseHTTPRequestHandler):
                     status = response.status
                     got = dict(response.headers)
                     if _is_stream(got):
+                        # Inflating as it arrives would work; inflating it *and*
+                        # keeping the tokens on their original schedule is a second
+                        # machine nobody has needed yet. We asked for identity, so a
+                        # compressed stream means the provider ignored us — say so
+                        # before a single byte goes back.
+                        if _header(got, "content-encoding").lower() not in (
+                            "", "identity",
+                        ):
+                            raise Unrecordable(
+                                "the provider compressed an event stream; this proxy "
+                                "passes streams through untouched and will not record "
+                                "bytes it cannot read"
+                            )
                         payload = self._pass_through(status, got, response)
                         passed_through.append(True)
                     else:
-                        payload = response.read()
+                        payload = _inflate(response.read(), got)
             except urllib.error.HTTPError as failure:
                 # A provider error is part of what happened, not a reason to stop.
-                payload = failure.read()
                 status = failure.code
                 got = dict(failure.headers)
+                payload = _inflate(failure.read(), got)
             return {
                 "status": status,
                 "headers": {k: v for k, v in got.items()
                             if k.lower() not in SKIP_RESPONSE_HEADERS},
-                "body": payload.decode("utf-8", "replace"),
+                "body": _text(payload, "response body"),
             }
 
         # One conversation with the engine at a time: the protocol is request and
         # response over a single socket, and an agent may well be concurrent.
-        with self.lock:
-            recorded = self.session.call(
-                _target(self.path),
-                perform,
-                args={"method": method, "path": self.path, "body": body},
-                effect=READ,
-            )
+        try:
+            with self.lock:
+                recorded = self.session.call(
+                    _target(self.path),
+                    perform,
+                    args={"method": method, "path": self.path, "body": body},
+                    effect=READ,
+                )
+        except Unrecordable as refusal:
+            # The engine already has this as a failed step, with the reason. All that
+            # is left is to tell the agent, unless the stream beat us to the socket.
+            return self._refuse(refusal, answered=bool(passed_through))
 
         if passed_through:
             return  # the agent already has every byte of it
@@ -164,6 +275,22 @@ class _Handler(BaseHTTPRequestHandler):
         for key, value in (recorded.get("headers") or {}).items():
             if key.lower() not in SKIP_RESPONSE_HEADERS:
                 self.send_header(key, value)
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def _refuse(self, refusal: Unrecordable, answered: bool = False) -> None:
+        """Fail the call loudly rather than record something lossy.
+
+        The trajectory keeps the refusal as an error effect, so the gap is named in
+        the recording as well as on the terminal.
+        """
+        print(f"[noidroid.proxy] refusing to record: {refusal}", file=sys.stderr)
+        if answered:
+            return  # the agent has the whole body already; nothing left to send
+        payload = f"noidroid.proxy: {refusal}\n".encode()
+        self.send_response(502)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
         self.wfile.write(payload)
