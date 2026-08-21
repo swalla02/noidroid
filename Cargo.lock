@@ -829,6 +829,7 @@ dependencies = [
  "clap",
  "noidroid-core",
  "ratatui",
+ "serde",
  "serde_json",
 ]
 

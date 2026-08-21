@@ -16,6 +16,7 @@ use noidroid_core::model::{Action, Failure, Intervention, Provenance, Step, Traj
 use noidroid_core::repo::{self, Repo};
 use noidroid_core::{tree, Error, Result};
 
+mod doctor;
 mod palette;
 mod stand;
 mod tui;
@@ -179,6 +180,13 @@ enum Command {
     Diff { a: String, b: String },
     /// Re-hash every object and check nothing has been edited underneath us.
     Verify,
+    /// Say what a recording would and would not cover, before making one.
+    Doctor {
+        /// The program you mean to record, after `--`. Without it, the checks that
+        /// need to read your program report that nothing looked at it.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        command: Vec<String>,
+    },
     /// Browse trajectories and explore from a checkpoint, interactively.
     Tui {
         /// Start on this trajectory.
@@ -220,6 +228,12 @@ fn restore_default_sigpipe() {
 }
 
 fn dispatch(cli: Cli) -> Result<ExitCode> {
+    // Answered before anything is opened, deliberately: a preflight is about the
+    // environment rather than about a repository, and asking what a recording would
+    // cover must not create a store as a side effect of asking.
+    if let Command::Doctor { command } = &cli.command {
+        return Ok(doctor::run(command));
+    }
     let cwd = std::env::current_dir()?;
     let repo = Repo::discover(&cwd)?;
     match cli.command {
@@ -291,6 +305,8 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
         Command::Tree => cmd_tree(&repo),
         Command::Diff { a, b } => cmd_diff(&repo, &a, &b),
         Command::Verify => cmd_verify(&repo),
+        // Already answered above, without the repository this arm now has.
+        Command::Doctor { command } => Ok(doctor::run(&command)),
         Command::Tui { trajectory, plain } => tui::run(&repo, &cwd, trajectory, plain),
         Command::Stand => {
             stand::print_profile();

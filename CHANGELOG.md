@@ -9,6 +9,27 @@ how the package version relates to `STEP_VERSION`, the on-disk object format.
 
 ### Added
 
+- **`noidroid doctor` — what a recording would and would not cover, before one is
+  made.** Automatic capture fails open by construction: every patching mechanism can
+  miss a surface, and a recording that missed one still looks real. `--auto` already
+  refused when it found a hole, but only for the holes it knew to look for and only at
+  the moment of recording, which is after the decision to trust it has been made. The
+  doctor asks first, and it answers with five words that are not interchangeable: `ok`
+  (we looked, it is covered), `absent` (we looked, there is nothing here to cover),
+  `not captured` (we looked, it is not — with the issue that tracks it), `not
+  determined` (we could not look, which is never a pass), and `blocked` (a recording
+  made now would be refused or would miss something, and the command exits non-zero).
+  Every answer is something the tool did rather than something it meant to do: the SDK
+  request surfaces are enumerated out of `_base_client` *after* running the real
+  installer, so a client class this build has never heard of appears unhooked rather
+  than invisible to both; the egress fence is ticked only once it has actually refused
+  a connection to a reserved address. `noidroid doctor -- python3 agent.py` also parses
+  the program and names, with file and line, the clock and randomness reads (#30) and
+  the subprocess launches (#31) it cannot capture — and because it does not follow
+  imports, a file with nothing in it is reported as `not determined` rather than as a
+  clean program. The async SDK surface (#33) and the hardcoded `AF_UNIX` (#32) are
+  named as the known limitations they are instead of being left to look covered. There
+  is no score, no percentage and no readiness grade. (#29)
 - **The ways a world fails, named.** `noidroid branch --inject <kind>` writes the
   intervention for you: `timeout`, `server-error`, `rate-limited`, `unauthorized`,
   `malformed`, `empty`. Writing the payload by hand is the difference between a thing
