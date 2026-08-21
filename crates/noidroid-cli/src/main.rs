@@ -840,6 +840,7 @@ fn cmd_branch(
             dim(failure.describes())
         );
     }
+    print_branch_outcome(&branch, &report);
     print_shared_prefix(repo, &parent, &branch, at)?;
     println!();
     print_timeline(repo, &branch)?;
@@ -1713,6 +1714,36 @@ fn print_timeline(repo: &Repo, t: &Trajectory) -> Result<()> {
     Ok(())
 }
 
+/// How the branch ended, in the words `log` already uses.
+///
+/// A branch whose program died prints a timeline with no `finish` row, and nothing
+/// distinguishes that from a timeline that simply ended — so the status is said out
+/// loud. When it is `aborted` the reason is whatever the program said on its way out,
+/// which `print_child_output` has already put on the screen. When it said nothing,
+/// this says that instead: a guess at the reason would be worse than the silence.
+fn print_branch_outcome(branch: &Trajectory, report: &Report) {
+    let status = &branch.outcome.status;
+    let line = if status == "aborted" {
+        let exit = match branch.outcome.exit_code {
+            Some(code) => format!("the program exited {code}"),
+            None => "the program was killed".to_string(),
+        };
+        let why = if child_stream(report.stderr_path.as_deref()).is_some() {
+            "its last words are above"
+        } else {
+            "it said nothing on the way out, so nothing here says why"
+        };
+        format!(
+            "{} {}",
+            warn(status),
+            dim(&format!("— {exit} without reaching a finish; {why}"))
+        )
+    } else {
+        status_text(status)
+    };
+    println!("  {:<12} {}", dim("outcome"), line);
+}
+
 fn print_shared_prefix(
     repo: &Repo,
     parent: &Trajectory,
@@ -1773,18 +1804,36 @@ fn provenance_rank(label: &str) -> u8 {
     }
 }
 
+/// Everything the child said, on both of its streams. A program that dies explains
+/// itself on stderr, so reading only stdout drops the one line that says why the
+/// timeline stops where it does.
 fn print_child_output(report: &Report) {
-    if let Some(path) = &report.stdout_path {
-        if let Ok(text) = std::fs::read_to_string(path) {
-            let text = text.trim_end();
-            if !text.is_empty() {
-                for line in text.lines() {
-                    println!("{} {line}", dim("│"));
-                }
-                println!();
-            }
-        }
+    print_child_stream(report.stdout_path.as_deref(), None);
+    print_child_stream(report.stderr_path.as_deref(), Some("stderr"));
+}
+
+/// One of the child's streams, gutter-marked so it cannot be read as the tool's own
+/// words. stderr is labelled rather than merely tinted: "the program printed this"
+/// and "the program broke here" are different facts, and the difference has to
+/// survive being piped into a file.
+fn print_child_stream(path: Option<&Path>, name: Option<&str>) {
+    let Some(text) = child_stream(path) else {
+        return;
+    };
+    if let Some(name) = name {
+        println!("{}", dim(&format!("│ {name}:")));
     }
+    for line in text.lines() {
+        println!("{} {line}", dim("│"));
+    }
+    println!();
+}
+
+/// What a stream holds, or `None` when it holds nothing worth printing.
+fn child_stream(path: Option<&Path>) -> Option<String> {
+    let text = std::fs::read_to_string(path?).ok()?;
+    let text = text.trim_end().to_string();
+    (!text.trim().is_empty()).then_some(text)
 }
 
 fn head_provenance(repo: &Repo, t: &Trajectory) -> Result<Provenance> {

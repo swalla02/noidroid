@@ -44,6 +44,15 @@ how the package version relates to `STEP_VERSION`, the on-disk object format.
 
 ### Fixed
 
+- **A branch whose program died printed a timeline that just stopped.** `noidroid log`
+  called it `aborted` and `noidroid branch` never did, so the operator had to infer the
+  crash from a missing `finish` row — the inference this tool exists to remove, and the
+  whole result when the intervention was a failure the program was supposed to survive.
+  `branch` now states the outcome the way `log` does, and the child's stderr is printed
+  alongside its stdout, so the traceback that says *why* is on the screen instead of in
+  a log file nobody was told about. When the program said nothing on the way out, that
+  is what it says; the reason is never guessed at. This was never specific to
+  `--inject` — `--decide`, `--result` and `--fail` were all equally silent. (#58)
 - **`--inject all` was in the help and never in the binary.** It promised to branch
   every failure in turn and refused the moment anyone tried it. The help now names
   only what works, and a test through the real binary keeps it that way — a tool whose

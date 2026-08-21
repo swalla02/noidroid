@@ -114,6 +114,7 @@ $ noidroid branch run-1@2 --decide pick_flight=FL-203 \
 
 branched alt-1 from run-1@2
   intervention replace-decision pick_flight = "FL-203"
+  outcome      success
   prefix       2 step(s) shared with run-1 — identical objects, stored once
 
     0 ● genesis                                     real      replayed   2219c2d195
@@ -162,9 +163,16 @@ $ noidroid branch run-1@1 --inject malformed
 
 │ found 17 flights under 800
 
+│ stderr:
+│ Traceback (most recent call last):
+│   …
+│     ranked = sorted(flights, key=lambda f: f["price"])
+│ TypeError: string indices must be integers, not 'str'
+
 branched run-1~malformed-1 from run-1@1
   intervention replace-result "{\"unterminated\": "
   failure      malformed the answer was not the shape it should be
+  outcome      aborted — the program exited 1 without reaching a finish; its last words are above
   prefix       1 step(s) shared with run-1 — identical objects, stored once
 
     0 ● genesis                                  real      replayed   a7df183d1f
@@ -176,8 +184,10 @@ would raise, and any agent with a `try` around the call already handles them. Th
 raise nothing at all: the call returns, and an agent that does not validate its tool
 results carries the answer straight into what it does next. Above, seventeen characters
 of broken JSON were reported as seventeen flights, out loud and with confidence, before
-anything went wrong. As with every intervention the value is `simulated`, so nothing
-downstream of it may claim otherwise.
+anything went wrong. Then the program died on the next line, and the branch says so and
+shows what it said on the way out — "the run ended here" and "the run broke here" are
+different facts, and a timeline that stops does not distinguish them. As with every
+intervention the value is `simulated`, so nothing downstream of it may claim otherwise.
 
 ---
 
