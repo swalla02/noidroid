@@ -338,6 +338,43 @@ step and calling it the cause.
 
 ---
 
+## Sweeping for validation gaps
+
+`bisect` explains an outcome that already happened. `sweep` asks a different question
+of the same shape: which call, *made* to fail, changes the verdict? Every recorded call
+is branched against all six named failures, the way `bisect` branches every decision
+against its alternatives.
+
+```console
+$ noidroid sweep run-1
+SWEEP run-1 (ended success)
+  probing 6 failure kind(s) across 1 call(s) — 6 probe(s)
+
+  @1 call world.read × timeout      aborted  ← flips it
+  @1 call world.read × server-error aborted  ← flips it
+  @1 call world.read × rate-limited aborted  ← flips it
+  @1 call world.read × malformed    success  ← absorbed: the verdict never noticed
+  @1 call world.read × empty        success  ← absorbed: the verdict never noticed
+  @1 call world.read × unauthorized aborted  ← flips it
+
+  2 absorbed — the verdict stayed success as if the call had never failed:
+    @1 world.read × malformed    still success
+      noidroid diff run-1 run-1~1~malformed
+    @1 world.read × empty        still success
+      noidroid diff run-1 run-1~1~empty
+  that is a validation gap, not resilience — nothing downstream checked the result
+```
+
+Here the reading inverts from `bisect`. A flip is the boring outcome: of course an
+uncaught timeout aborts the run. An **absorbed** probe is the finding — the verdict
+came out exactly as recorded even though the call answered `malformed` or `empty`,
+which means nothing downstream ever looked at what came back. `sweep` runs every
+probe rather than stopping at the first flip, because the absorbed result is often not
+the first one, and exits non-zero when it finds at least one — the same signal a CI
+robustness check would want.
+
+---
+
 ## What the exploring cost
 
 "They cost nothing" is a claim, so it is one the tool has to be able to show.
@@ -504,6 +541,7 @@ export PYTHONPATH=$PWD/clients/python        # or: pip install -e clients/python
 | `noidroid checkout <traj>@<step> <dir>` | write out the workspace as it was |
 | `noidroid run --proxy -- <cmd>` | record an agent you did not write, in any language |
 | `noidroid bisect <traj>` | find which decision, changed, would have flipped the outcome |
+| `noidroid sweep <traj>` | find which call, made to fail, changes the verdict — and which don't |
 | `noidroid cost [<traj>]` | add up what the model calls used, and what was bought |
 | `noidroid restore <traj>@<step>` | put the files back as they were, keeping a way out |
 | `noidroid export` · `import` | move a trajectory between machines, as one committable file |

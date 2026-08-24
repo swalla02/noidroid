@@ -150,6 +150,14 @@ enum Command {
         #[arg(long, value_name = "TARGET=JSON")]
         simulate: Vec<String>,
     },
+    /// Try every named failure against every recorded call.
+    Sweep {
+        /// The trajectory to probe.
+        trajectory: String,
+        /// Stated-simulated value for an irreversible effect, as for `branch`.
+        #[arg(long, value_name = "TARGET=JSON")]
+        simulate: Vec<String>,
+    },
     /// Write a trajectory and everything it reaches to one committable file.
     Export {
         trajectory: String,
@@ -300,6 +308,10 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
             first,
             simulate,
         } => cmd_bisect(&repo, &cwd, &trajectory, goal, first, simulate),
+        Command::Sweep {
+            trajectory,
+            simulate,
+        } => cmd_sweep(&repo, &cwd, &trajectory, simulate),
         Command::Export { trajectory, output } => cmd_export(&repo, &trajectory, output),
         Command::Import { file, rename } => cmd_import(&repo, &file, rename.as_deref()),
         Command::Cost { trajectory, price } => cmd_cost(&repo, trajectory, price),
@@ -1183,6 +1195,162 @@ fn cmd_bisect(
             Ok(ExitCode::from(1))
         }
     }
+}
+
+/// Try every named failure against every recorded call, the way `bisect` tries every
+/// alternative against every recorded decision.
+///
+/// `bisect` explains an outcome that already happened: a decision was made, and it
+/// asks whether a different one would have changed the verdict. Nothing here happened
+/// — these are calls that answered normally, made to fail after the fact — so the
+/// reading inverts. A call that flips the verdict when it is made to fail is the
+/// unsurprising result: of course an uncaught timeout aborts the run. A call that does
+/// *not* flip it — especially `empty` or `malformed`, the two that raise nothing — is
+/// the finding this command exists to produce: nothing downstream ever looked at what
+/// came back before trusting it. That gets its own word, `absorbed`, rather than
+/// bisect's "no flip found", because here it is the good half of the report.
+fn cmd_sweep(repo: &Repo, cwd: &Path, name: &str, simulate: Vec<String>) -> Result<ExitCode> {
+    let parent = repo.load_trajectory(name)?;
+    let chain = repo.chain(&parent)?;
+    let original = parent.outcome.status.clone();
+
+    let mut simulated = BTreeMap::new();
+    for entry in &simulate {
+        let (target, value) = split_kv(entry)?;
+        simulated.insert(target, parse_value(&value));
+    }
+
+    // Every recorded call, crossed with every named failure.
+    let mut probes: Vec<(u64, String, Failure)> = Vec::new();
+    for (_, step) in &chain {
+        let Action::Call { target, .. } = &step.action else {
+            continue;
+        };
+        for failure in Failure::ALL {
+            probes.push((step.index, target.clone(), failure));
+        }
+    }
+
+    println!(
+        "{} {} {}",
+        shell("SWEEP"),
+        name,
+        dim(&format!("(ended {original})"))
+    );
+    if probes.is_empty() {
+        println!(
+            "  {}",
+            dim("no recorded call was found to probe — a sweep needs at least one nd.call()")
+        );
+        return Ok(ExitCode::SUCCESS);
+    }
+    let calls = probes
+        .iter()
+        .map(|(i, t, _)| (*i, t.clone()))
+        .collect::<std::collections::BTreeSet<_>>()
+        .len();
+    println!(
+        "  {}",
+        dim(&format!(
+            "probing {} failure kind(s) across {calls} call(s) \u{2014} {} probe(s)",
+            Failure::ALL.len(),
+            probes.len()
+        ))
+    );
+    println!();
+
+    // Every probe is run, not just enough to find one: the interesting result is
+    // often not the first one, and stopping early would silently discard exactly what
+    // this command exists to surface.
+    let mut absorbed: Vec<(u64, String, Failure, String, String)> = Vec::new();
+    for (at, target, failure) in probes {
+        let label = format!("{name}~{at}~{}", failure.label());
+        if repo.has_trajectory(&label) {
+            continue;
+        }
+        let spec = RunSpec {
+            command: parent.command.clone(),
+            launch_dir: cwd.to_path_buf(),
+            name: Some(label.clone()),
+            env: if parent.auto {
+                auto_capture_env()?
+            } else {
+                Vec::new()
+            },
+            auto: parent.auto,
+            watch: None,
+        };
+        let attempt = engine::run(
+            repo,
+            &spec,
+            Mode::Branch {
+                at,
+                intervention: failure.as_intervention(),
+                simulate: simulated.clone(),
+            },
+            Some(&parent),
+        );
+
+        // A probe that could not be re-entered establishes nothing. Unlike `bisect`,
+        // `aborted` is not treated that way here — it is an ordinary, expected verdict
+        // for this sweep: a program that never catches the exception a raised failure
+        // produces is supposed to abort, and that is a flip like any other.
+        let outcome = match &attempt {
+            Err(Error::Refused(_)) => "unreachable".to_string(),
+            Err(e) => return Err(Error::Protocol(format!("probing {name}@{at}: {e}"))),
+            Ok(report) => match &report.trajectory {
+                Some(branch) => branch.outcome.status.clone(),
+                None => "unreachable".to_string(),
+            },
+        };
+        let established = outcome != "unreachable";
+        let flips = established && outcome != original;
+
+        let annotation = if flips {
+            format!("  {}", ok("\u{2190} flips it"))
+        } else if established {
+            absorbed.push((at, target.clone(), failure, outcome.clone(), label.clone()));
+            format!("  {}", warn("\u{2190} absorbed: the verdict never noticed"))
+        } else {
+            format!("  {}", warn("\u{2190} unknown, nothing was established"))
+        };
+        println!(
+            "  @{at} call {} {} {:<12} {}{}",
+            dim(&target),
+            dim("\u{d7}"),
+            failure.label(),
+            status_text(&outcome),
+            annotation
+        );
+    }
+
+    println!();
+    if absorbed.is_empty() {
+        println!(
+            "  {}",
+            ok("no call was absorbed \u{2014} every reachable failure changed the verdict")
+        );
+        return Ok(ExitCode::SUCCESS);
+    }
+    println!(
+        "  {}",
+        warn(&format!(
+            "{} absorbed \u{2014} the verdict stayed {original} as if the call had never failed:",
+            absorbed.len()
+        ))
+    );
+    for (at, target, failure, outcome, label) in &absorbed {
+        println!(
+            "    @{at} {target} \u{d7} {:<12} still {outcome}",
+            failure.label()
+        );
+        println!("      noidroid diff {name} {label}");
+    }
+    println!(
+        "  {}",
+        dim("that is a validation gap, not resilience \u{2014} nothing downstream checked the result")
+    );
+    Ok(ExitCode::from(1))
 }
 
 /// A filesystem- and eye-friendly name for a chosen value.
