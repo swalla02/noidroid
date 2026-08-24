@@ -427,6 +427,7 @@ fn cmd_run(repo: &Repo, cwd: &Path, flags: RunFlags, command: Vec<String>) -> Re
             print_timeline(repo, t)?;
             println!();
             print_census(&report);
+            print_nondeterminism_warning(&spec.command);
             println!(
                 "\n  {}\n    noidroid show {}@{}",
                 dim("inspect a checkpoint:"),
@@ -1942,6 +1943,63 @@ fn print_census(report: &Report) {
     if !delivery.is_empty() {
         println!("  {:<22} {}", dim("steps by delivery"), delivery.join(", "));
     }
+}
+
+/// What `noidroid doctor` would already say about this program, said once, here,
+/// because the person who needed it was the one who just ran `noidroid run` without
+/// ever thinking to ask first (#71).
+///
+/// #30 explains a divergence *at replay time* by comparing a recorded value against
+/// the one re-execution produced — a pair, which is most of what keeps that report
+/// honest. At record time there is only ever one value, and a lone number in the
+/// unix-seconds window is equally a clock, an id, a byte count or a price in cents:
+/// guessing from it would be exactly the fidelity theatre this project refuses. So
+/// this asks a different, better-founded question — not "does this value look like a
+/// clock" but "does this program call one" — parsed from source the way `doctor`
+/// already does, which finds every call site once, not once per time it executes,
+/// with no value shape to get wrong.
+///
+/// A finding here is a fact about the source, not a prediction: the value it reads
+/// may never reach a call argument or the workspace, so it may never cause a replay
+/// to diverge. The wording says exactly that much and no more.
+fn print_nondeterminism_warning(command: &[String]) {
+    let Some(findings) = doctor::nondeterminism_in(command) else {
+        return;
+    };
+    let mut findings: Vec<_> = findings
+        .into_iter()
+        .filter(|f| f.kind == "clock" || f.kind == "randomness")
+        .collect();
+    if findings.is_empty() {
+        return;
+    }
+    let total = findings.len();
+    findings.truncate(4);
+    println!(
+        "\n  {} this program reads the clock or randomness in {} {} — if a value \
+         from one of them reaches a call argument or the workspace, replaying this \
+         recording will diverge there:",
+        warn("note:"),
+        total,
+        if total == 1 { "place" } else { "places" }
+    );
+    for f in &findings {
+        println!("    {}:{}  {}", f.file, f.line, f.name);
+    }
+    if total > findings.len() {
+        println!(
+            "    {}",
+            dim(&format!("… and {} more", total - findings.len()))
+        );
+    }
+    println!(
+        "  {}",
+        dim(
+            "mark the argument volatile=, or route the value through nd.call(); \
+             `noidroid doctor` has the full picture, including what a scan like this \
+             cannot see."
+        )
+    );
 }
 
 /// Least divergent from recorded reality first.

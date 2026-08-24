@@ -144,13 +144,20 @@ class _Sites(ast.NodeVisitor):
         return ".".join([head] + parts[1:])
 
 
-def _scan(arguments: list) -> dict:
+def scan(arguments: list) -> dict:
     """Parse whichever arguments name a readable Python file.
 
     Imports are deliberately not followed. Doing so means resolving a package layout
     we do not own and reporting on files the user did not point at; not doing so means
     a clean result covers one file and no more. The second is a smaller lie, and the
     doctor states the boundary rather than hiding it.
+
+    Used two ways: as one section of the full probe below, and — behind `--scan`, with
+    none of `_providers()` or `_fence()` run — as the whole report a recording asks for
+    of itself once it finishes (#71). The parse is the same either way, on purpose:
+    there is exactly one place that decides what counts as a clock, a randomness read
+    or a subprocess launch, and a recording seeing something doctor would not is a bug
+    worth finding, not a second opinion.
     """
     scanned: list[str] = []
     unreadable: list[dict[str, str]] = []
@@ -290,10 +297,20 @@ def _fence() -> dict:
 
 def main(argv: Optional[list] = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
+    if arguments[:1] == ["--scan"]:
+        # The lean path: parse the files named and say what is in them, and nothing
+        # about the SDKs installed or the fence in *this* throwaway process. A
+        # recording asks this after every run (#71); running `_providers()` and
+        # `_fence()` on every recording would import and patch SDKs, and install a
+        # socket fence, for a question that is purely about source text.
+        report = scan(arguments[1:])
+        sys.stdout.write(SENTINEL + json.dumps(report) + "\n")
+        sys.stdout.flush()
+        return 0
     report = {
         "client": _client(),
         "providers": _providers(),
-        "scan": _scan(arguments),
+        "scan": scan(arguments),
         # Last, because it patches this process's sockets and everything above it
         # may legitimately want one.
         "fence": _fence(),

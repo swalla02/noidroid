@@ -82,12 +82,12 @@ struct UnreadableFacts {
     error: String,
 }
 
-#[derive(Deserialize)]
-struct Finding {
-    file: String,
-    line: u32,
-    name: String,
-    kind: String,
+#[derive(Deserialize, Clone)]
+pub struct Finding {
+    pub file: String,
+    pub line: u32,
+    pub name: String,
+    pub kind: String,
 }
 
 #[derive(Deserialize)]
@@ -665,6 +665,27 @@ fn probe(command: &[String]) -> Result<Probe, Blind> {
         }
         None => Blind::Broken(last_meaningful(&stderr)).into_err(),
     }
+}
+
+/// The static half of the scan above, run again on its own — no SDK import, no
+/// patch, no fence — so that `noidroid run` can ask it of the program it just
+/// recorded (#71).
+///
+/// `None` when python could not be asked at all, or did not answer: this is
+/// advisory, layered on top of a recording that already succeeded, so a probe that
+/// fails says nothing about the *program* rather than alarming about the *probe*. A
+/// caller who wants to know why can still run `noidroid doctor` and get the full
+/// picture, blind spots included.
+pub fn nondeterminism_in(command: &[String]) -> Option<Vec<Finding>> {
+    let output = Command::new("python3")
+        .args(["-m", "noidroid.doctor", "--scan"])
+        .args(command)
+        .output()
+        .ok()?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let line = stdout.lines().rev().find(|l| l.starts_with(SENTINEL))?;
+    let facts: ScanFacts = serde_json::from_str(&line[SENTINEL.len()..]).ok()?;
+    Some(facts.findings)
 }
 
 impl Blind {

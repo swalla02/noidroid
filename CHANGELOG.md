@@ -87,6 +87,21 @@ how the package version relates to `STEP_VERSION`, the on-disk object format.
   made up. `$0.00` is the exception, because zero tokens cost nothing at every price
   there is. An imported bundle carries content but not per-run notes, so it cannot say
   how its calls were delivered — and says so instead of totalling to zero. (#36)
+- **`noidroid run` says, unasked, when the program it just recorded reads the clock or
+  randomness.** #30 explains a divergence at *replay* time by comparing a recorded
+  value against a re-executed one — a pair, which is most of what keeps that report
+  honest. At record time there is only ever one value, and a lone number in the
+  unix-seconds window is equally a clock, an id, a byte count or a price in cents;
+  guessing a cause from it would be the fidelity theatre this project refuses. So this
+  asks a different, better-founded question instead of a shakier version of the same
+  one: not "does this value look like a clock" but "does this program call one" —
+  parsed from source the same way `noidroid doctor` already does, which finds every
+  call site once no matter how many times it executes, with no value shape to get
+  wrong. One combined note at the end of the run, naming each call with its file and
+  line, or nothing at all for a program that never touches either. It states a fact
+  about the source, not a prediction about what will happen: the value it reads may
+  never reach a call argument or the workspace, so a replay may never diverge because
+  of it, and the wording says exactly that much. (#71)
 
 ### Changed
 
