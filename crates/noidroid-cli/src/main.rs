@@ -12,6 +12,7 @@ use noidroid_core::bundle;
 use noidroid_core::checkpoint;
 use noidroid_core::cost;
 use noidroid_core::engine::{self, Mode, Report, RunSpec};
+use noidroid_core::intact::{self, Reading};
 use noidroid_core::model::{Action, Failure, Intervention, Provenance, Step, Trajectory};
 use noidroid_core::repo::{self, Repo};
 use noidroid_core::{tree, Error, Result};
@@ -688,6 +689,21 @@ fn cmd_replay(
         });
     }
     if report.divergences.is_empty() {
+        // Hash equality is the whole of the check, and it is only worth something if
+        // the bytes it re-derived were readable when they were written down. A body
+        // recorded through the pre-#56 proxy reproduces perfectly *because* it is
+        // mangled, so "faithful" here would be a true sentence about nothing.
+        let reading = print_readback(&report.unreadable);
+        if reading == Reading::Lost {
+            println!(
+                "\n  {} the reconstruction addresses the same objects as the recording,",
+                warn("unverifiable:")
+            );
+            println!("                 and that proves nothing here: a body written down wrong");
+            println!("                 reproduces exactly. The original bytes are not");
+            println!("                 recoverable, so re-record it.");
+            return Ok(ExitCode::from(1));
+        }
         println!(
             "\n  {} the reconstruction addresses the same objects as the recording",
             ok("faithful:")
@@ -1649,21 +1665,112 @@ fn cmd_diff(repo: &Repo, a: &str, b: &str) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
+/// Two questions, and the second one is the one nothing else asks.
+///
+/// Re-hashing every object says the past has not been *edited*. It cannot say the
+/// past was ever *readable*: a recording made through the proxy before #56 holds
+/// bodies that were mangled on the way in, and those bytes hash to exactly what they
+/// are. So this also reads the recorded values back and says which of them cannot
+/// have been what the world actually sent.
 fn cmd_verify(repo: &Repo) -> Result<ExitCode> {
     let (count, bad) = repo.store.verify()?;
     println!("{} {count} object(s)", shell("VERIFY"));
+    let mut failed = false;
     if bad.is_empty() {
         println!(
             "  {} every object still hashes to its own name",
-            ok("intact:")
+            ok("unedited:")
         );
-        Ok(ExitCode::SUCCESS)
     } else {
+        failed = true;
         for digest in &bad {
             println!("  {} {digest}", warn("corrupt:"));
         }
-        Ok(ExitCode::from(1))
     }
+
+    let mut findings: Vec<(String, intact::Finding)> = Vec::new();
+    for t in repo.list_trajectories()? {
+        for finding in intact::scan_chain(&repo.store, &repo.chain(&t)?)? {
+            findings.push((t.name.clone(), finding));
+        }
+    }
+    let reading = intact::worst(&findings.iter().map(|(_, f)| f.clone()).collect::<Vec<_>>());
+    match reading {
+        Reading::Intact => println!(
+            "  {} every recorded value reads back as text somebody could have sent",
+            ok("readable:")
+        ),
+        _ => {
+            for (name, finding) in &findings {
+                let mark = match finding.reading {
+                    Reading::Lost => warn("lost:"),
+                    _ => dim("suspect:"),
+                };
+                println!("  {mark} {name}{}", finding.summary());
+                for signal in &finding.signals {
+                    println!("        {} {}", dim("·"), dim(&signal.describes()));
+                }
+                if finding.signals.is_empty() {
+                    println!(
+                        "        {} {}",
+                        dim("·"),
+                        dim("a provider can legitimately send one; this is not a verdict")
+                    );
+                }
+            }
+            if reading == Reading::Lost {
+                failed = true;
+                println!(
+                    "\n  {}",
+                    warn(
+                        "a body that was not recorded intact cannot be repaired — the \
+                          original bytes are gone."
+                    )
+                );
+                println!(
+                    "  {}",
+                    dim(
+                        "Re-record it. A replay of it re-derives the same addresses and \
+                         proves nothing."
+                    )
+                );
+            }
+        }
+    }
+
+    Ok(if failed {
+        ExitCode::from(1)
+    } else {
+        ExitCode::SUCCESS
+    })
+}
+
+/// Say what a reconstruction's source recording is worth, and return the worst of it.
+///
+/// Silent when there is nothing to say, which is every recording made after #56.
+fn print_readback(findings: &[intact::Finding]) -> Reading {
+    let reading = intact::worst(findings);
+    if reading == Reading::Intact {
+        return reading;
+    }
+    println!("\n  {}", shell("WHAT THE RECORDING ITSELF IS WORTH"));
+    for finding in findings {
+        let mark = match finding.reading {
+            Reading::Lost => warn("lost"),
+            _ => dim("suspect"),
+        };
+        println!("    {mark} {}", finding.summary());
+        for signal in &finding.signals {
+            println!("      {} {}", dim("·"), dim(&signal.describes()));
+        }
+    }
+    if reading == Reading::Suspect {
+        println!(
+            "    {}",
+            dim("a provider can legitimately send U+FFFD; nothing here says it did not")
+        );
+    }
+    reading
 }
 
 // ---------------------------------------------------------------- presentation

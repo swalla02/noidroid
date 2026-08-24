@@ -131,7 +131,8 @@ jobs:
           test "$before" = "$after" || { echo "branching mutated its parent"; exit 1; }
 
           noidroid verify | tee verify.txt
-          grep -q "intact:" verify.txt
+          grep -q "unedited:" verify.txt
+          grep -q "readable:" verify.txt
 
           # The reference environment: a world that can be re-driven and can never be
           # put back. The release's central claim is that this reconstructs exactly,
