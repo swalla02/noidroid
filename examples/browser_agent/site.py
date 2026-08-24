@@ -110,6 +110,12 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def serve(port):
+    # ThreadingHTTPServer.server_bind() calls socket.getfqdn(host), a reverse DNS
+    # lookup that has stalled for tens of seconds on some CI hosts and delayed the
+    # announce line the browser test waits on for a port number.
+    import socket
+
+    socket.getfqdn = lambda *a, **k: "localhost"
     return ThreadingHTTPServer(("127.0.0.1", port), Handler)
 
 
@@ -118,5 +124,8 @@ if __name__ == "__main__":
 
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8099
     server = serve(port)
-    print(f"serving on http://127.0.0.1:{port}")
+    # The port bound, not the port asked for. They differ when the argument is 0,
+    # which is what the browser test passes so the OS hands out a port nobody else
+    # holds -- and this line is where the test reads it back.
+    print(f"serving on http://127.0.0.1:{server.server_address[1]}", flush=True)
     server.serve_forever()

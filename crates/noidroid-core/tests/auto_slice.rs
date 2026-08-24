@@ -13,18 +13,18 @@
 //! Skipped with a note when the Anthropic SDK is not installed.
 
 use std::fs;
+use std::io::{BufRead, BufReader};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, ChildStdout, Command, Stdio};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use noidroid_core::engine::{self, Mode, RunSpec};
 use noidroid_core::Repo;
 
-const PORT: u16 = 8789;
-
 const FAKE_API: &str = r#"
-import json, sys
+import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 class Handler(BaseHTTPRequestHandler):
@@ -42,7 +42,14 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-ThreadingHTTPServer(("127.0.0.1", int(sys.argv[1])), Handler).serve_forever()
+# ThreadingHTTPServer.server_bind() calls socket.getfqdn(host), a reverse DNS
+# lookup that has stalled for tens of seconds on some CI hosts and delayed the
+# print() the Rust side waits on for a port number.
+import socket
+socket.getfqdn = lambda *a, **k: "localhost"
+server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+print(server.server_address[1], flush=True)
+server.serve_forever()
 "#;
 
 /// Contains no reference to noidroid. That is the point.
@@ -83,35 +90,49 @@ fn bootstrap_path() -> PathBuf {
     client_path().join("noidroid/_bootstrap")
 }
 
-struct Api(Child);
+struct Api {
+    child: Child,
+    port: u16,
+}
 
 impl Api {
+    /// Starts the stand-in on a port the OS picked, and reads that port back from the
+    /// child listening on it.
+    ///
+    /// A fixed port is a shared name: `connect` answering on one says only that
+    /// *something* is listening, so a stand-in left behind by a killed run -- or a
+    /// second worktree of this repository running the same suite -- would be recorded
+    /// in place of the one this test started, and `stop` could not take it away. See
+    /// #74, and `unique_socket_path` in the engine for the same remedy.
     fn start(script: &Path) -> Api {
         let mut child = Command::new("python3")
             .arg(script)
-            .arg(PORT.to_string())
-            .stdout(Stdio::null())
+            .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
             .expect("the stand-in API should start");
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while Instant::now() < deadline {
-            if TcpStream::connect(("127.0.0.1", PORT)).is_ok() {
-                return Api(child);
+        let stdout = child.stdout.take().expect("the child's stdout is a pipe");
+        match announced_port(stdout) {
+            Some(port) => Api { child, port },
+            None => {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("the stand-in API never announced a port");
             }
-            std::thread::sleep(Duration::from_millis(50));
         }
-        let _ = child.kill();
-        let _ = child.wait();
-        panic!("the stand-in API never came up");
+    }
+
+    fn endpoint(&self) -> String {
+        format!("http://127.0.0.1:{}", self.port)
     }
 
     fn stop(mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
+        let port = self.port;
+        let _ = self.child.kill();
+        let _ = self.child.wait();
         let deadline = Instant::now() + Duration::from_secs(5);
         while Instant::now() < deadline {
-            if TcpStream::connect(("127.0.0.1", PORT)).is_err() {
+            if TcpStream::connect(("127.0.0.1", port)).is_err() {
                 return;
             }
             std::thread::sleep(Duration::from_millis(50));
@@ -122,9 +143,23 @@ impl Api {
 
 impl Drop for Api {
     fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
+}
+
+/// The port the child announced on its first line of stdout, or `None` if it said
+/// something else or nothing at all. Bounded, because a stand-in that never speaks
+/// would otherwise hang the suite instead of failing it.
+fn announced_port(stdout: ChildStdout) -> Option<u16> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut line = String::new();
+        let _ = BufReader::new(stdout).read_line(&mut line);
+        let _ = tx.send(line);
+    });
+    let line = rx.recv_timeout(Duration::from_secs(10)).ok()?;
+    line.trim().parse().ok()
 }
 
 #[test]
@@ -154,13 +189,16 @@ fn a_program_with_no_noidroid_code_records_and_replays() {
 
     let repo = Repo::open(&dir).unwrap();
     let pythonpath = format!("{}:{}", bootstrap_path().display(), client_path().display());
+    // 1. Record against the live stand-in.
+    let api = Api::start(&api_script);
+    let endpoint = api.endpoint();
     let spec = |name: Option<&str>| RunSpec {
         command: vec!["python3".into(), agent.display().to_string()],
         launch_dir: dir.clone(),
         name: name.map(str::to_string),
         env: vec![
             ("PYTHONPATH".into(), pythonpath.clone()),
-            ("FAKE_API".into(), format!("http://127.0.0.1:{PORT}")),
+            ("FAKE_API".into(), endpoint.clone()),
             // This agent only uses the sync client, and the async surface we cannot
             // cover would otherwise refuse the recording — which is the point of the
             // refusal, and why saying so explicitly is the honest way past it.
@@ -170,8 +208,6 @@ fn a_program_with_no_noidroid_code_records_and_replays() {
         watch: None,
     };
 
-    // 1. Record against the live stand-in.
-    let api = Api::start(&api_script);
     let recorded = engine::run(&repo, &spec(Some("auto-1")), Mode::Record, None)
         .expect("recording an uninstrumented program should work")
         .trajectory

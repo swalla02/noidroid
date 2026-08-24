@@ -79,6 +79,23 @@ how the package version relates to `STEP_VERSION`, the on-disk object format.
 
 ### Fixed
 
+- **The proxy test suite bound fixed ports, so a stale provider could be recorded
+  instead of the one under test.** `Provider::start` polled `TcpStream::connect` and
+  returned as soon as *something* answered on `8791`-`8794` — never checking that the
+  answerer was the process it had just spawned. A provider left behind by a killed
+  run, or a second worktree of this repository running its suite at the same time,
+  meant the next test recorded against someone else's server. For
+  `a_streamed_response_reaches_the_client_before_it_ends` that produced the wrong
+  verdict rather than a loud failure: a stale non-streaming provider on the port made
+  the arrival-spread assertion fail on a proxy fix that was fine, which is exactly
+  what happened once during #30. Two worktrees running `cargo test --all` at once is
+  now the ordinary case, not the exotic one, so every stand-in provider in
+  `proxy_slice.rs` and `auto_slice.rs`, and the example site `browser_slice.rs`
+  drives, now binds port 0 and reports back the port the OS actually gave it, the
+  same remedy `unique_socket_path` has always used and #44 already applied to
+  `Store::put`'s scratch name and `watch_slice`'s fixture directory. A new test,
+  `a_provider_never_adopts_a_server_it_did_not_start`, starts two providers back to
+  back and proves that killing the second one only takes down its own port. (#74)
 - **A branch whose program died printed a timeline that just stopped.** `noidroid log`
   called it `aborted` and `noidroid branch` never did, so the operator had to infer the
   crash from a missing `finish` row — the inference this tool exists to remove, and the
