@@ -425,6 +425,7 @@ fn cmd_run(repo: &Repo, cwd: &Path, flags: RunFlags, command: Vec<String>) -> Re
         Some(t) => {
             println!("{} {}", shell("recorded"), bold(&t.name));
             print_timeline(repo, t)?;
+            print_outcome(t, &report);
             println!();
             print_census(&report);
             println!(
@@ -872,7 +873,7 @@ fn cmd_branch(
             dim(failure.describes())
         );
     }
-    print_branch_outcome(&branch, &report);
+    print_outcome(&branch, &report);
     print_shared_prefix(repo, &parent, &branch, at)?;
     println!();
     print_timeline(repo, &branch)?;
@@ -1864,17 +1865,18 @@ fn print_timeline(repo: &Repo, t: &Trajectory) -> Result<()> {
     Ok(())
 }
 
-/// How the branch ended, in the words `log` already uses.
+/// How a recording ended, in the words `log` already uses.
 ///
-/// A branch whose program died prints a timeline with no `finish` row, and nothing
+/// A recording whose program died — whether made directly by `run` or by branching
+/// with an intervention — prints a timeline with no `finish` row, and nothing
 /// distinguishes that from a timeline that simply ended — so the status is said out
 /// loud. When it is `aborted` the reason is whatever the program said on its way out,
 /// which `print_child_output` has already put on the screen. When it said nothing,
 /// this says that instead: a guess at the reason would be worse than the silence.
-fn print_branch_outcome(branch: &Trajectory, report: &Report) {
-    let status = &branch.outcome.status;
+fn print_outcome(t: &Trajectory, report: &Report) {
+    let status = &t.outcome.status;
     let line = if status == "aborted" {
-        let exit = match branch.outcome.exit_code {
+        let exit = match t.outcome.exit_code {
             Some(code) => format!("the program exited {code}"),
             None => "the program was killed".to_string(),
         };
