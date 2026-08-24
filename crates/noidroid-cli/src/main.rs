@@ -679,6 +679,18 @@ fn cmd_replay(
              everything after it is new",
             ink_provenance("live")
         );
+        if !report.denied.is_empty() {
+            // A --live prefix can cover a recorded irreversible target without
+            // anyone asking for that one by name; when it does, the census above
+            // says "1 denied" and nothing else, which is easy to miss the reason
+            // for. Same wording as the branch command's hint.
+            println!(
+                "\n  {} {} — irreversible outside a recording; \
+                 --live cannot force it through",
+                warn("denied:"),
+                report.denied.join(", ")
+            );
+        }
         if let Some(made) = report.trajectory.as_ref() {
             println!("    noidroid diff {name} {}", made.name);
         }

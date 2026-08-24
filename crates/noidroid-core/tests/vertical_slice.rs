@@ -743,6 +743,45 @@ fn a_live_replay_reruns_only_what_it_was_asked_to() {
     assert_eq!(f.repo.load_trajectory("run-1").unwrap(), recorded);
 }
 
+#[test]
+fn a_live_replay_still_refuses_an_irreversible_target() {
+    // `--live world.charge` names the irreversible target itself as the very first
+    // call it covers, so this hits the Phase::Reconstructing arm directly rather
+    // than falling through gone_live into the already-guarded Counterfactual arm —
+    // the one path `may_perform_irreversible()` did not gate.
+    let f = Fixture::new("live-irreversible");
+    let recorded = f.record();
+    let charged_by_recording = f.witness_lines().iter().filter(|l| *l == "charge").count();
+    assert_eq!(
+        charged_by_recording, 1,
+        "the original recording performs the charge exactly once"
+    );
+
+    let mut spec = f.spec(Some("live-charge"), &[]);
+    spec.name = Some("live-charge".into());
+    let report = engine::run(
+        &f.repo,
+        &spec,
+        Mode::Replay {
+            live: vec!["world.charge".into()],
+        },
+        Some(&recorded),
+    )
+    .expect("a live replay should run to completion even when the live target is refused");
+
+    assert_eq!(
+        f.witness_lines().iter().filter(|l| *l == "charge").count(),
+        charged_by_recording,
+        "an irreversible target must not be re-performed just because it was named --live"
+    );
+    assert_eq!(
+        report.denied,
+        vec!["world.charge".to_string()],
+        "the refusal must show up in report.denied, the same way it does outside a live replay, \
+         so the CLI's denial hint has something to print"
+    );
+}
+
 // -- named failures -------------------------------------------------------------
 //
 // Branching could always replace a result or raise an error; the operator had to
