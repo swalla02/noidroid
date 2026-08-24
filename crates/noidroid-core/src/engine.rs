@@ -709,9 +709,19 @@ impl<'a> Session<'a> {
             // Reconstructing: serve the recording. The engine never says "execute"
             // here, so a replay structurally cannot touch the world — except for a
             // target the operator explicitly asked to run live, which is the one way
-            // a recording stays useful after the prompt or the model changed.
+            // a recording stays useful after the prompt or the model changed. Live
+            // still is not a way around `may_perform_irreversible()`: naming a
+            // recorded irreversible target with `--live` must not perform it a
+            // second time, so this checks the guard exactly like the ordinary
+            // execute path below does.
             Phase::Reconstructing if self.runs_live(&target) => {
                 self.gone_live = true;
+                if effect == EffectKind::Irreversible && !self.may_perform_irreversible() {
+                    return match self.simulated_value(&target) {
+                        Some(value) => self.serve_simulated(action, target, effect, value),
+                        None => self.deny_irreversible(action, target),
+                    };
+                }
                 self.pending = Some(Pending {
                     action,
                     effect,
