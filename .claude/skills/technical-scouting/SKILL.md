@@ -143,6 +143,8 @@ It **accumulates**. Nothing is overwritten wholesale, ever.
 ## References
 
 - `references/sources.md` — source mix, vocabulary ladders, query patterns
+- `references/orx-cli.md` — `orx discover`/`orx paper`: structured, no-login paper
+  search and reads; prefer it over WebSearch for the Research source class
 - `references/intelligence-card.md` — card schema, template, worked example
 - `references/prioritisation.md` — scoring rubric and ranking method
 - `references/landscape.md` — classification taxonomy for adjacent projects
