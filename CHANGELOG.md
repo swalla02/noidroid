@@ -103,6 +103,16 @@ how the package version relates to `STEP_VERSION`, the on-disk object format.
 
 ### Fixed
 
+- **`Store`'s and `tree`'s own unit-test `tmp()` helpers still named scratch
+  directories from pid and `SystemTime::now()` alone, with no counter.** #44 gave
+  `Store::put`'s scratch name and `watch_slice`'s fixture directory a `SEQ:
+  AtomicU64` counter for exactly this reason: `cargo test` runs a crate's unit tests
+  in parallel threads of one process, and two threads landing on the same clock tick
+  is not exotic. Two neighbours of that fix never got it — `store.rs`'s `tmp()` is
+  untagged and shared by four `#[test]` functions in the same process; `tree.rs`'s
+  three call sites use distinct tags, which happened to keep them apart so far but is
+  the same unguaranteed assumption. Both `tmp()` helpers now carry the same `SEQ`
+  counter `Store::put` already uses. (#80)
 - **The proxy test suite bound fixed ports, so a stale provider could be recorded
   instead of the one under test.** `Provider::start` polled `TcpStream::connect` and
   returned as soon as *something* answered on `8791`-`8794` — never checking that the
