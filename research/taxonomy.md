@@ -69,6 +69,10 @@ Marked `[active]` where we are currently looking hardest.
 - computer-use agents `[active]`
 - browser automation `[active]`
 - AI-assisted debugging
+- agent effect boundaries `[active]` — commit/rollback scope around an agent's *external*
+  side effects. Opened 2026-08-24. Distinct from `checkpointing`: the subject is not how
+  state is saved but **what a restore fails to take back**, and it is where `EffectKind`
+  and the deny-by-default rule get compared against the field.
 
 ## RL post-training
 *Opened 2026-08-21. This is where the trainer-side landscape lives — the question is not
@@ -96,6 +100,13 @@ Marked `[active]` where we are currently looking hardest.
   `agent evaluation`, `computer-use agents` and `browser automation` active. No other
   category opened — `checkpointing`, `state reconstruction`, `provenance` and
   `counterfactual reasoning` already covered the mechanism side of every finding.
+- 2026-08-24 — added **agent effect boundaries** under *Agents* after the computer-use
+  rollback scan. Three cards needed a home that `checkpointing` did not give them: the
+  eight-paper transaction cluster, the `--live` irreversible defect, and the attended-state
+  finding are all about the effects a restore does *not* undo, which is a different subject
+  from how a checkpoint is taken. Nothing else opened — `capture honesty`,
+  `environment reconstruction / hermeticity` and `state reconstruction` housed the rest, and
+  `computer-use agents` stays active.
 - 2026-08-21 — added **deterministic simulation testing** under *Core mechanism* after the
   DST scan, and marked `fault injection` and `simulation` active. It needed its own line
   rather than living under `deterministic replay`: DST reproduces a run from a seed with no

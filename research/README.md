@@ -26,6 +26,7 @@ The live ones, highest priority first. Moved to `decisions.md` once they get a v
 
 | Score | Action | Rec | Card | Touches |
 | --- | --- | --- | --- | --- |
+| 81 | **Close the `--live` irreversible hole** — `engine.rs:693` is the one `execute` path that never consults `may_perform_irreversible()`. Failing test first | PROTOTYPE | [`live-replay-performs-irreversible-effects`](discoveries/2026-08-24-live-replay-performs-irreversible-effects.md) | engine, cli, clients |
 | 81 | ~~Make an adopted world observation report as `opaque`, not `witnessed`~~ — **landed as #52** (`Report::served`, `Situation::achieved`). #53 is open on the model underneath. | PROTOTYPE | [`unverified-world-redrive`](discoveries/2026-08-19-unverified-world-redrive.md) | env, engine, cli |
 | 81 | Build the engine-issued seed — engine mints, `Action::Genesis` records, client applies. Supersedes the autoseed spike's design | PROTOTYPE | [`engine-issued-seed`](discoveries/2026-08-21-engine-issued-seed.md) | proto, model, engine, clients |
 | 81 | Add `noidroid run --verify` — replay the recording you just made and report divergence as a capture gap | PROTOTYPE | [`verify-by-double-execution`](discoveries/2026-08-19-verify-by-double-execution.md) | engine, cli |
@@ -39,12 +40,16 @@ The live ones, highest priority first. Moved to `decisions.md` once they get a v
 | 54 | Settle #53 Q1 (does a pure replay report `opaque`?) using "recomputed vs measured reward" as the forcing case, and name run grip apart from trajectory grip | PROTOTYPE | [`reward-computed-over-an-unaddressed-state`](discoveries/2026-08-21-reward-computed-over-an-unaddressed-state.md) | env, engine, cli |
 | 36 | Add the browser adapter's re-drive mute and assert the run report changes (#53 Q5) | PROTOTYPE | [`reproducibility-bought-by-mocking-the-world`](discoveries/2026-08-21-reproducibility-bought-by-mocking-the-world.md) | clients |
 | 36 | Ship `noidroid score` — re-run a checker against a step's materialised state, offline | PROTOTYPE | [`reward-computed-over-an-unaddressed-state`](discoveries/2026-08-21-reward-computed-over-an-unaddressed-state.md) | cli, tree |
+| 54 | **Measure restore-and-branch at step k and publish the curve** — the band we are compared against is now a distribution (0.1–2 s), not two numbers. Gate on the fork-point record; fourth scan carrying it | INVESTIGATE | [`unverified-fork-in-branching-rl`](discoveries/2026-08-21-unverified-fork-in-branching-rl.md) | engine, cli |
 | 36 | Write an OpenEnv adapter: `state()` becomes a declared world, `witnessed` grip for free | INVESTIGATE | [`openenv`](landscape/openenv.md) | clients |
+| 36 | Survey the four client paths for server-side session handles, then declare the inference endpoint as a world in §12 and `doctor` | INVESTIGATE | [`attended-state-is-a-world-we-never-declare`](discoveries/2026-08-24-attended-state-is-a-world-we-never-declare.md) | env, engine, cli, clients |
+| 24 | Make the irreversible-effect record queryable across a trajectory's branches — a walk and a filter over data we already store | WATCH | [`no-undo-across-the-tool-boundary`](discoveries/2026-08-24-no-undo-across-the-tool-boundary.md) | cli, repo |
 
 ## Scans
 
 | Date | Question | Cadence |
 | --- | --- | --- |
+| [2026-08-24](scans/2026-08-24-computer-use-rollback-and-effect-boundaries.md) | For computer-use agents, what happens to state a rollback does not restore? (Answer: eight 2026 systems are inventing the seam we already have — and reading one of them against `engine.rs` found a live replay that performs irreversible effects.) | targeted |
 | [2026-08-21](scans/2026-08-21-deterministic-simulation-testing.md) | What does the deterministic simulation testing world know that we do not? (Answer: it confirms our branching model and our checkpoint choice, and hands us the seed mechanism. Its technique needs a rewrite of the world.) | targeted |
 | [2026-08-21](scans/2026-08-21-computer-use-gaps-and-rl-post-training.md) | Where is the next capability gap in computer use, and what would make us useful for open-source RL post-training? (Answer: a verified fork — not a rollout format, which is already built.) | open |
 | [2026-08-20](scans/2026-08-20-rl-robotics-autonomous-labs.md) | What should we build next to be useful for RL, autonomous labs and robotics? (Answer: nothing domain-specific — but they found a silent pass in our environment model.) | open |
@@ -56,6 +61,9 @@ Newest first. `PRESENT`/`REFINEMENT` cards are here so nobody rediscovers them.
 
 | Card | Rec | Novelty | Conf | What it is |
 | --- | --- | --- | --- | --- |
+| [live-replay-performs-irreversible-effects](discoveries/2026-08-24-live-replay-performs-irreversible-effects.md) | PROTOTYPE | MISSING | HIGH | Of three `execute` paths in `on_call`, one never asks `may_perform_irreversible()`. `--live` on an irreversible target charges the card again, silently. |
+| [attended-state-is-a-world-we-never-declare](discoveries/2026-08-24-attended-state-is-a-world-we-never-declare.md) | INVESTIGATE | MISSING | MEDIUM | A logical rollback and a serving session's KV disagree invisibly. The inference endpoint is a world in our own §12 sense and has no row. |
+| [no-undo-across-the-tool-boundary](discoveries/2026-08-24-no-undo-across-the-tool-boundary.md) | WATCH | PRESENT | MEDIUM | Eight 2026 systems inventing a transaction boundary for agent effects. All three inference mechanisms exist because nobody can declare what `EffectKind` declares. |
 | [engine-issued-seed](discoveries/2026-08-21-engine-issued-seed.md) | PROTOTYPE | MISSING | HIGH | Temporal issues the PRNG seed from the orchestrator and records re-seeding as an event. The only shape that keeps a branch honest. |
 | [a-simulator-per-dependency](discoveries/2026-08-21-a-simulator-per-dependency.md) | WATCH | DIFFERENT | HIGH | DST's price is a hand-written simulator per dependency. RisingWave got to one; their escape plan was Hermit. The unserved row is ours. |
 | [replay-safe-change-taxonomy](discoveries/2026-08-21-replay-safe-change-taxonomy.md) | INVESTIGATE | REFINEMENT | HIGH | Temporal runs our architecture and says code change, not capture, is the top divergence cause. We have no change-safety table. |
@@ -80,6 +88,8 @@ Newest first. `PRESENT`/`REFINEMENT` cards are here so nobody rediscovers them.
 | Project | Class | Activity | Entry |
 | --- | --- | --- | --- |
 | Shepherd | DIRECT COMPETITOR | active — alpha v0.3.0 | [`shepherd`](landscape/shepherd.md) |
+| Crab (HKUST) | INFRASTRUCTURE | active — preprint, no repo found | [`crab-agent-checkpoint-restore`](landscape/crab-agent-checkpoint-restore.md) |
+| orx (OpenResearch CLI) | INSPIRATION | active — our own literature tool | [`openresearch-cli`](landscape/openresearch-cli.md) |
 | verifiers (Prime Intellect) | POTENTIAL INTEGRATION | active — v1 | [`verifiers-prime-intellect`](landscape/verifiers-prime-intellect.md) |
 | OpenEnv | POTENTIAL INTEGRATION | active — nine-org steering committee | [`openenv`](landscape/openenv.md) |
 | AgentENV (kvcache-ai / Moonshot) | INFRASTRUCTURE | active | [`agentenv-kvcache`](landscape/agentenv-kvcache.md) |
@@ -105,9 +115,17 @@ Empty. Superseded cards move here with a pointer to what replaced them.
 The things the next scans should chip at, kept here so they are not lost between runs:
 
 - **How long does our checkpoint actually take to restore and branch, as a function of
-  k?** Nothing has ever measured it. The public numbers we would be compared against are
-  1,920 ms (BPO Docker snapshot) and sub-50 ms (AgentENV microVM resume). Every RL
-  recommendation from 2026-08-21 is conditioned on this and it is a day's work.
+  k?** Nothing has ever measured it, through four scans. The comparison band resolved on
+  2026-08-24: Crab reports checkpoint p50/p95/p99 of 0.1/0.7/1.0 s and restore median 0.71 s
+  on commodity backends (OpenZFS + runc-CRIU), bracketed by 1,920 ms (BPO Docker snapshot)
+  and sub-50 ms (AgentENV microVM resume). So the question is now "are we inside 0.1–2 s at
+  realistic k", which is sharper and still a day's work.
+- **Do any of our client paths hold a server-side inference session handle?** Opened
+  2026-08-24. Decides whether `2026-08-24-attended-state-is-a-world-we-never-declare` is one
+  sentence of documentation or a `doctor` warning plus a declared world. A survey of four
+  code paths, not research.
+- **Does anyone besides ACRFence maintain a cross-branch log of irreversible effects, and
+  in what shape?** Opened 2026-08-24. We found the need and not the prior art.
 - **How often does a real-web browser re-drive reproduce the page digest exactly?** Decides
   whether "a reproducible computer-use episode against the real web" is a claim we may make.
 - ~~**Deterministic simulation testing**~~ — **done 2026-08-21**, own targeted scan.
@@ -126,7 +144,9 @@ The things the next scans should chip at, kept here so they are not lost between
   rests on `verl` and `verifiers` only.
 - **Computer-use trajectory datasets** — OpenCUA/AgentNet, AgentTrek, OS-Genesis,
   GUI-Odyssey, AndroidControl. An explicit sub-question of the 2026-08-21 scan that it did
-  not reach.
+  not reach, and which the 2026-08-24 scan also did not reach. **It has now lost twice.**
+  Commission it as its own targeted scan or strike it — leaving it here is how it stays
+  permanently second to whatever the run's headline question is.
 - **rosbag2's replay implementation and the MCAP container format** — the 2026-08-20 scan
   reached the ROS *complaint* but not the source. The one weak line in
   `unverified-world-redrive`'s comparison table.

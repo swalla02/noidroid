@@ -2,7 +2,7 @@
 id: 2026-08-21-unverified-fork-in-branching-rl
 title: Branching RL rests on a snapshot-fidelity assumption nobody checks
 discovered: 2026-08-21
-updated: 2026-08-21
+updated: 2026-08-24
 categories: [checkpointing, state reconstruction, counterfactual reasoning, model-based RL, unserved-problem, negative-signal]
 class: RESEARCH
 recommendation: PROTOTYPE
@@ -200,5 +200,46 @@ AgentENV numbers being right; it depends only on the README being silent, which 
   pattern in four unrelated physical domains.
 - Counter-evidence: BPO's measured +5.8 SWE-bench gain with the unverified restore.
 
+## Update — 2026-08-24: a fourth instance, and the latency distribution step 0 needs
+
+**Crab** (HKUST, <https://www.alphaxiv.org/abs/2604.28138>) is a semantics-aware
+checkpoint/restore runtime for agent sandboxes that names RL rollout branching as one of
+its four motivating use cases and reports **40.0–64.2% token savings for tree-based RL
+post-training** by reusing intermediate sandbox states across branched rollouts. It is the
+fourth independent system in this card's pattern: it claims "100% recovery correctness",
+and that figure is **benchmark task outcome, not a re-derived address**. Nothing in Crab
+compares the restored state to the state that was checkpointed. The irony is sharp — their
+eBPF Inspector computes exactly the net-change information that would let them check, and
+they use it only to decide *whether* to checkpoint, never to verify that a restore landed.
+
+Crab also supplies the number this card's recommendation was blocked on. The 2026-08-21
+scan's item 1 had a step 0 ("measure wall-clock restore-and-branch at step k") whose only
+reference points were 1,920 ms (BPO Docker overlayfs) and sub-50 ms (AgentENV microVM).
+Crab gives a distribution on commodity backends (OpenZFS + runc-CRIU):
+
+- checkpoint p50 / p95 / p99: **0.1 / 0.7 / 1.0 s**, bimodal — filesystem-only 20–100 ms,
+  process checkpoints 700–1000 ms;
+- restore under 1 s (median 0.71 s, p95 1.00 s) even on constrained shared storage;
+- and the sparsity result that sets the bar: **up to 87% of agent turns need no checkpoint
+  at all**, because they change no recovery-relevant state.
+
+So the band we would be measured in is roughly 0.1–2 s per fork, not 50 ms. A deterministic
+prefix replay at small k is plausibly inside that band; at large k it is not. Step 0 is
+still the gate and is still unmeasured.
+
+One further corroboration of C2, from a system that did not set out to make it. Crab's
+"agent-in-a-sandbox" deployment has a **fast-forward mechanism**: after restoring, the
+Coordinator *replays cached historical LLM responses* to the agent until its logical
+progress matches the restored checkpoint head. That is a deterministic prefix served from a
+recording — our checkpoint, invented as a reconciliation hack to paper over the gap between
+a snapshot and a process that outlived it. And their Coordinator is an HTTP reverse proxy
+on the agent–LLM path that logs request/response pairs: the third independent instance of
+`--proxy`'s architecture, after `verifiers` and our own `af81680`.
+
+Read as a report via `orx paper`, not as source; the numbers are theirs.
+
 ## Changelog
 - 2026-08-21 — created.
+- 2026-08-24 — updated: Crab added as a fourth unverified-restore instance, with the
+  checkpoint/restore latency distribution that step 0 of the 2026-08-21 recommendation was
+  waiting on, and an independent re-derivation of the deterministic-prefix checkpoint.

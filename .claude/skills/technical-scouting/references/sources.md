@@ -14,6 +14,9 @@ early or not real.
 - Awesome-lists and curated indexes as *entry points only*, never as evidence.
 
 **Research**
+- `orx discover`/`orx paper` (see `orx-cli.md`) for structured, no-login search and
+  reads over alphaXiv (arXiv), OpenAlex, and bioRxiv — prefer this over WebSearch when
+  a paper, benchmark, method, or author is the object of the search.
 - arXiv (cs.DC, cs.SE, cs.PL, cs.OS, cs.DB, cs.LG, cs.RO), and the venues that matter
   here: OSDI, SOSP, NSDI, EuroSys, ATC, PLDI, OOPSLA, ICSE, FSE, ISSTA, VLDB, SIGMOD,
   CoRL, ICRA, MLSys, TaPP/IPAW (provenance), USENIX FAST (storage).

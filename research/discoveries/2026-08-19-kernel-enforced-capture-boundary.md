@@ -161,10 +161,51 @@ Not verified: I read their README and concepts docs, not their enforcement code,
 "enforced at the syscall" is their claim. `2026-08-19-silent-best-effort-sandboxing` is
 the reason to check it rather than assume it.
 
+## Update — 2026-08-24: the other verb, with accuracy numbers
+
+Crab (HKUST, <https://www.alphaxiv.org/abs/2604.28138>) uses the same kernel surface for
+the *other* half of this card. Landlock **forbids**; Crab **detects**, and it publishes the
+numbers this card has always lacked.
+
+Their Inspector combines an in-kernel eBPF monitor with a user-space daemon:
+`sys_enter`/`sys_exit` tracepoints on filesystem-affecting syscalls made by sandbox
+processes, cgroups to delineate which processes are the sandbox's, and kernel soft-dirty
+page tracking (`/proc/PID/pagemap`, `/proc/PID/clear_refs`) for in-memory change. It
+computes **net** change between checkpoints, so a temp file created and deleted inside one
+turn registers as nothing.
+
+Measured, on Claude-code / iFlow-cli / SWE-agent over Terminal-Bench and SWE-Bench:
+
+- Process change detection: **100% accurate, zero false positives, zero false negatives.**
+- Filesystem change detection: **98.3% accurate, zero false negatives, 2.3% false positives.**
+- Asynchronous, off the critical path; median per-turn Inspector latency 31–72 ms, p95
+  under 200 ms.
+
+Two things matter to us. First, the **error direction is the one we require**: zero false
+negatives, and a false positive costs an unnecessary checkpoint rather than a missed
+effect. That is the acceptance criterion for roadmap item 2 ("detecting unmediated effects
+beyond the workspace") written by someone else's evaluation — a detector for us is only
+admissible if a miss is impossible and the cost of a spurious hit is bounded.
+
+Second, it reframes the Landlock spike. The two verbs are separable and can ship
+separately: *forbid* the egress and out-of-workspace writes (Landlock, this card's original
+proposal), or *observe* them and name the step that did it (eBPF, Crab's mechanism). Forbid
+is a smaller change and fits our posture better — a loud refusal over a silent gap — but
+observe is the only one that works for the `--watch <dir>` mode, where the whole point is
+that the program writes to a real project directory we do not own.
+
+Caveat, and it is the same one as for Shepherd: I read Crab's report, not its code. The
+accuracy figures are theirs. eBPF also carries a privilege cost that Landlock does not —
+Landlock is unprivileged by design, tracepoint-attaching eBPF generally is not — so
+"observe" is the option with the worse deployment story even though it has the better
+numbers.
+
 ## Evidence
 
 - Primary: <https://docs.kernel.org/userspace-api/landlock.html>
 - Primary: <https://landlock.io/>
+- Supporting: <https://www.alphaxiv.org/abs/2604.28138> — Crab; eBPF change detection with
+  a zero-false-negative result, and the fail-safe error direction we would need.
 - Supporting: <https://man7.org/linux/man-pages/man7/landlock.7.html>
 - Counter-evidence: <https://github.com/NVIDIA/OpenShell/issues/803> — how this goes
   wrong in practice; see `2026-08-19-silent-best-effort-sandboxing`.
@@ -176,3 +217,7 @@ the reason to check it rather than assume it.
 - 2026-08-19 — created.
 - 2026-08-21 — updated: Shepherd ships Seatbelt + Landlock enforcement with documented
   scope limits; spike is smaller than originally scoped. Landscape entry added.
+- 2026-08-24 — updated: Crab's eBPF Inspector supplies the *detection* half of this card
+  with published accuracy (zero false negatives on both filesystem and process change) and
+  the fail-safe error direction roadmap item 2 needs. Forbid and observe separated as two
+  shippable halves.
