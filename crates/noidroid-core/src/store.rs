@@ -163,13 +163,15 @@ mod tests {
     use super::*;
 
     fn tmp() -> PathBuf {
+        static SEQ: AtomicU64 = AtomicU64::new(0);
         let p = std::env::temp_dir().join(format!(
-            "noidroid-store-{}-{:?}",
+            "noidroid-store-{}-{:?}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
         ));
         fs::create_dir_all(&p).unwrap();
         p

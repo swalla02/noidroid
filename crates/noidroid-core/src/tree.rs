@@ -282,15 +282,18 @@ pub fn diff(a: &Tree, b: &Tree) -> Vec<(String, Change)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     fn tmp(tag: &str) -> PathBuf {
+        static SEQ: AtomicU64 = AtomicU64::new(0);
         let p = std::env::temp_dir().join(format!(
-            "noidroid-tree-{tag}-{}-{}",
+            "noidroid-tree-{tag}-{}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
         ));
         fs::create_dir_all(&p).unwrap();
         p
