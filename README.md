@@ -755,6 +755,11 @@ cannot be vague about its own boundaries.
 - **A branch is not a prediction.** Past the divergence point, `live` calls query a
   world that has moved on. Paranoid Android tells you what happens now from that state — not
   what would have happened then.
+- **Interventions apply only at recorded interaction points.** `--decide`, `--result`,
+  `--fail` and `--inject` all answer a `call` or `decide` the program made. An event it
+  never asked about cannot be injected — that would mean pushing an input into a
+  running program on our schedule instead of its, which needs preemption and this
+  project does not have it.
 - **Browser reconstruction is bounded by the recorded page set.** A branch that
   navigates somewhere the recording never went needs the live network, which is
   refused by default and labelled `live` when allowed. Reaching the site again is not

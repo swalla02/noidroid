@@ -73,6 +73,11 @@ how the package version relates to `STEP_VERSION`, the on-disk object format.
 
 ### Changed
 
+- **The README and `docs/direction.md` now state the branch-point boundary.**
+  Branching and fault injection answer a `call` or `decide` the program made;
+  `apply_intervention` is reachable only from `on_call`/`on_decide`. An event the
+  program never asked about cannot be injected — that needs preemption, which this
+  project does not have. (#79)
 - **A divergence caused by a clock or a random id now says so.** A timestamp or a UUID
   in a call argument makes every replay diverge, and the report named two long values
   and left the reader to notice that one of them was a clock — then guessed, wrongly,
