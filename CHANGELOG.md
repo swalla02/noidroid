@@ -113,6 +113,14 @@ how the package version relates to `STEP_VERSION`, the on-disk object format.
   three call sites use distinct tags, which happened to keep them apart so far but is
   the same unguaranteed assumption. Both `tmp()` helpers now carry the same `SEQ`
   counter `Store::put` already uses. (#80)
+- **A recording whose program died printed a timeline that just stopped.** `noidroid
+  log` called it `aborted`; `noidroid run` never did, so the operator had to notice a
+  missing `finish` row to tell a recording that ended from one that broke — the same
+  gap #58 closed for `branch`, one command over. `print_branch_outcome` is now
+  `print_outcome`, shared by both commands, and `run` states the outcome — `aborted`
+  with the exit code, or the normal finish status — right after the timeline it just
+  printed, where the reader is already looking, instead of leaving it implicit above
+  a traceback the child's stderr already prints. (#68)
 - **The proxy test suite bound fixed ports, so a stale provider could be recorded
   instead of the one under test.** `Provider::start` polled `TcpStream::connect` and
   returned as soon as *something* answered on `8791`-`8794` — never checking that the
