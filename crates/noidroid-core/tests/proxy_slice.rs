@@ -15,7 +15,7 @@ use std::io::{BufRead, BufReader};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdout, Command, Stdio};
-use std::sync::mpsc;
+use std::sync::{mpsc, Mutex};
 use std::time::{Duration, Instant};
 
 use noidroid_core::engine::{self, Mode, RunSpec};
@@ -537,6 +537,17 @@ fn announced_port(stdout: ChildStdout) -> Option<u16> {
     line.trim().parse().ok()
 }
 
+/// Rust's test runner starts every `#[test]` fn in this binary on its own thread by
+/// default, so several tests can be spawning a `python3` provider at the same moment.
+/// On a machine with few cores that turned "read one line from a just-started child"
+/// into a genuine multi-second stall -- `a_provider_never_adopts_a_server_it_did_not_start`
+/// timed out waiting for its announcement twice on the macOS CI runner, at whatever
+/// bound the timeout was set to, which is what a starved reader looks like rather than
+/// what a hung child looks like. Serialising *startup* (spawn through the first line of
+/// output) rather than the whole test keeps every provider's launch from competing for
+/// the same handful of cores, without serialising the tests themselves.
+static PROVIDER_STARTING: Mutex<()> = Mutex::new(());
+
 struct Provider {
     child: Child,
     port: u16,
@@ -556,19 +567,30 @@ impl Provider {
     /// Same remedy as `unique_socket_path` in the engine and as #44 gave `Store::put`:
     /// never assume a name that another process could already hold.
     fn start(script: &Path) -> Provider {
+        let _slot = PROVIDER_STARTING.lock().unwrap_or_else(|e| e.into_inner());
         let mut child = Command::new("python3")
             .arg(script)
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .spawn()
             .expect("the stand-in provider should start");
         let stdout = child.stdout.take().expect("the child's stdout is a pipe");
+        let stderr = child.stderr.take().expect("the child's stderr is a pipe");
         match announced_port(stdout) {
             Some(port) => Provider { child, port },
             None => {
                 let _ = child.kill();
                 let _ = child.wait();
-                panic!("the stand-in provider never announced a port");
+                let mut said = String::new();
+                let _ = std::io::Read::read_to_string(&mut BufReader::new(stderr), &mut said);
+                panic!(
+                    "the stand-in provider never announced a port.{}",
+                    if said.trim().is_empty() {
+                        String::new()
+                    } else {
+                        format!(" It said:\n{said}")
+                    }
+                );
             }
         }
     }
