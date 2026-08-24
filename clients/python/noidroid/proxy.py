@@ -36,7 +36,11 @@ for U+FFFD does not.
 the concatenation is kept for the trajectory. An agent under recording therefore sees
 its tokens on the same schedule as one that is not being recorded — which matters,
 because an agent that times out only when recorded is not the agent you meant to
-record. Everything else is still read in full before it is written back.
+record. Everything else is still read in full before it is written back. If a provider
+compresses the stream despite `identity`, the call is refused the same way a bad
+content coding is refused elsewhere: inflating a stream incrementally without
+disturbing the schedule the passthrough exists to preserve is a second mechanism this
+proxy does not have.
 
 The engine hears about a call only once it completes, so a passed-through stream is
 recorded after its last byte has already reached the agent. That is fine for a
