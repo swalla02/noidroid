@@ -22,6 +22,11 @@ effect produces a trajectory that looks real:
 * async clients and streaming responses
 * anything not going through the OpenAI/Anthropic SDKs
 * time, randomness, and the filesystem
+* subprocesses -- a child does not inherit the bootstrap's patch, so nothing it does
+  is mediated, fenced, or reported. Capturing one properly needs process-tree control
+  this project does not have, so the honest move is not to try: the moment the
+  program imports `subprocess`, that is treated exactly like an unhooked SDK surface
+  and refused by default. See `guard_subprocess`.
 
 `noidroid run --auto` prints what it hooked. If something you rely on is not listed,
 it was not recorded.
@@ -31,11 +36,12 @@ from __future__ import annotations
 
 import importlib
 import os
+import sys
 from typing import Any, Callable, Optional
 
 from . import READ, connect
 
-__all__ = ["install", "hooked"]
+__all__ = ["install", "hooked", "guard_subprocess"]
 
 #: Base clients generated from the same template, so one patch each covers everything.
 PROVIDERS = ("openai", "anthropic")
@@ -66,6 +72,140 @@ def _shared_session():
     if _session is None:
         _session = connect()
     return _session
+
+
+#: Set once the guard has been installed, so a program that imports the client
+#: twice -- same reason every other install in this module is idempotent -- does not
+#: end up double-patching `Popen.__init__`.
+_guarding_subprocess = False
+
+
+def guard_subprocess() -> None:
+    """Treat spawning a child process as the unhooked-surface gap it is.
+
+    A child process does not inherit the bootstrap's patch: its network calls are not
+    fenced, its file writes are not recorded, none of it is mediated. Capturing that
+    properly needs the process-tree control tools like rr and Hermit have, and that is
+    a much bigger piece of work than this module does. What is in scope is not passing
+    silently -- so the moment the program actually spawns one, this treats it exactly
+    like the async SDK client already is: reported, and refused unless the caller says
+    `--allow-gaps`.
+
+    This patches `subprocess.Popen.__init__` rather than watching for the module to be
+    *imported*. An import-time signal was tried first, using `sys.addaudithook` on the
+    `import` event -- CPython's documented mechanism for exactly this, immune to how
+    the import is spelled. It does not work here: `import`'s audit event fires once
+    per module name for the life of the interpreter, and `anthropic` (like most SDKs
+    built on `httpx`) imports `subprocess` itself as a transitive dependency before
+    this module ever gets a chance to install the hook, which spends the one firing on
+    an import that has nothing to do with the program shelling out. Every later
+    `import subprocess` in the program's own code is invisible after that, silently --
+    exactly the failure mode this guard exists to prevent, now baked into detecting
+    it. `Popen.__init__` is not import-order sensitive: every high-level entry point
+    (`subprocess.run`, `.call`, `.check_output`, `os.popen`) constructs a `Popen`
+    internally, so patching the one class method it shares catches all of them, and
+    does so regardless of who imported the module first. `os.system` is the one
+    common way to shell out that bypasses `Popen` entirely and is not covered.
+
+    Patching the constructor alone over-reports, though: `httpx` -- and so `anthropic`
+    and `openai`, both built on it -- shells out to `uname -p` on every real request,
+    to fill in a User-Agent header. That is not the program shelling out; it is the
+    SDK's own plumbing, and flagging it would refuse or declare-opaque every ordinary
+    model call, which is a false alarm louder than the silence this exists to fix. So
+    `guarded_init` looks one frame past `subprocess.py`'s own convenience wrappers
+    (`run`, `call`, `check_call`, `check_output` all construct a `Popen` internally)
+    and reports only when *that* frame -- whoever actually asked for a process to be
+    spawned -- is outside the standard library and outside any installed package.
+    Walking further up would not distinguish anything: every call chain eventually
+    reaches the program's own entry point, library-internal ones included, so asking
+    "is the program's code anywhere on this stack" is true of all of them. Asking who
+    the *immediate* instigator was is what tells `subprocess.run(["git", "diff"])`
+    written in the program apart from `uname -p` three layers inside `httpx`.
+    """
+    global _guarding_subprocess
+    if _guarding_subprocess:
+        return
+    _guarding_subprocess = True
+
+    import subprocess as _subprocess
+    import sysconfig
+
+    library_paths = tuple(
+        os.path.realpath(p)
+        for p in dict.fromkeys(
+            sysconfig.get_path(name)
+            for name in ("stdlib", "platstdlib")
+            if sysconfig.get_path(name)
+        )
+    )
+
+    def is_library_frame(filename: str) -> bool:
+        # site-packages/dist-packages covers every mainstream way a package ends up
+        # installed -- a venv, the system interpreter, a user site -- without having
+        # to enumerate each one's own sysconfig path, which sysconfig only reports for
+        # whichever installation scheme is active right now.
+        if "site-packages" in filename or "dist-packages" in filename:
+            return True
+        return os.path.realpath(filename).startswith(library_paths)
+
+    original_init = _subprocess.Popen.__init__
+    reported = False
+
+    def guarded_init(self, *args, **kwargs):
+        nonlocal reported
+        if not reported:
+            frame = sys._getframe(1)
+            # subprocess.py's own convenience wrappers -- run, call, check_call,
+            # check_output -- all construct a Popen internally; skip past those
+            # specific frames so what gets checked is whoever asked subprocess to do
+            # something, not subprocess's own plumbing for doing it. Anything further
+            # up (uname -p from inside platform.py, called from inside httpx) is a
+            # library frame and is not walked past -- only the immediate instigator
+            # is checked, not the whole chain back to the program's entry point,
+            # which every call has one of and would make this always true.
+            while frame is not None and frame.f_code.co_filename == _subprocess.__file__:
+                frame = frame.f_back
+            from_the_program = frame is not None and not is_library_frame(
+                frame.f_code.co_filename
+            )
+            if from_the_program:
+                reported = True
+                print(
+                    "[noidroid.auto] NOT hooked: subprocess — a child process does "
+                    "not inherit the bootstrap, so nothing it does is mediated, "
+                    "fenced, or reported",
+                    file=sys.stderr,
+                )
+                if os.environ.get("NOIDROID_ALLOW_GAPS") == "1":
+                    # Escapable on purpose. Declare the gap on the recording itself
+                    # so every step from here on says what it is worth, rather than
+                    # the refusal being the only place this was ever written down.
+                    try:
+                        _shared_session().observe(
+                            "subprocess", state=None, restorable=False
+                        )
+                    except Exception:  # noqa: BLE001
+                        # Losing the declaration must not crash the program that
+                        # already decided to accept this gap.
+                        pass
+                else:
+                    print(
+                        "[noidroid.auto] refusing to record: the program is about "
+                        "to spawn a child process, which is not captured, so this "
+                        "recording would be incomplete without saying so.\n"
+                        "  Record it anyway with --allow-gaps if you know the rest "
+                        "of the program does not depend on what the child does.",
+                        file=sys.stderr,
+                    )
+                    # os._exit rather than raising: a raised exception reaches the
+                    # program's own call to Popen(), where a bare `except:` around
+                    # it would swallow the refusal and keep going -- exactly the
+                    # silent gap this exists to close. Dying here is unconditional.
+                    sys.stderr.flush()
+                    os._exit(2)
+        return original_init(self, *args, **kwargs)
+
+    _subprocess.Popen.__init__ = guarded_init
 
 
 # ------------------------------------------------------------------ serialisation
@@ -181,4 +321,7 @@ def install(providers: Optional[tuple] = None) -> list[str]:
         # it is not.
         if getattr(base, "AsyncAPIClient", None) is not None:
             _unhooked.append(f"{provider}._base_client.AsyncAPIClient.request")
+    # Independent of which SDKs are present: a program that shells out is a hole no
+    # matter what else it does or does not call.
+    guard_subprocess()
     return hooked()

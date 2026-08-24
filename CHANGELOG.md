@@ -30,6 +30,25 @@ how the package version relates to `STEP_VERSION`, the on-disk object format.
   clean program. The async SDK surface (#33) and the hardcoded `AF_UNIX` (#32) are
   named as the known limitations they are instead of being left to look covered. There
   is no score, no percentage and no readiness grade. (#29)
+- **A program that spawns a child process is caught, not silently missed.** A child
+  does not inherit the bootstrap's patch, so nothing it does was ever mediated,
+  fenced, or reported — and until now nothing said so. `--auto` treats it exactly
+  like the async-client hole: reported, and refused unless the caller says
+  `--allow-gaps`, in which case the recording declares `subprocess` as an opaque
+  world so every step after it says what it is worth. Detection patches
+  `subprocess.Popen.__init__` and checks the immediate caller, past `subprocess.py`'s
+  own convenience wrappers, against the standard library and every installed
+  package — precise enough to catch `subprocess.run(["git", "diff"])` written in the
+  program while staying silent on `uname -p`, which `httpx` (and so `anthropic` and
+  `openai`) shells out to on every real request to build a User-Agent header. An
+  import-time signal was tried first and does not work: `anthropic` imports
+  `subprocess` itself as a side effect before the program's own code ever runs,
+  which spends the one-shot `import` audit event on plumbing that has nothing to do
+  with the program shelling out and leaves every later `import subprocess`
+  invisible. Because detection can only happen once the program is already running,
+  a refusal here may follow steps already recorded; the engine's existing handling
+  for a program that dies mid-run applies unchanged — what happened is kept, marked
+  `aborted`. `os.system` bypasses `Popen` entirely and is a known gap. (#31)
 - **The ways a world fails, named.** `noidroid branch --inject <kind>` writes the
   intervention for you: `timeout`, `server-error`, `rate-limited`, `unauthorized`,
   `malformed`, `empty`. Writing the payload by hand is the difference between a thing
