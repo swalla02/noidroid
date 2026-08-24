@@ -38,6 +38,9 @@ That sounds like a slogan until it starts refusing things. In practice it has me
 - Automatic capture refuses to record around a hole rather than recording through it.
 - A replay that reaches the network is stopped, because a reconstruction that touched
   the world is not a reconstruction.
+- Branching and fault injection apply only at recorded interaction points. An event the
+  program never asked about — something pushed in on our schedule rather than asked for
+  on its — cannot be injected; that needs preemption, and this project does not have it.
 
 The failure mode this project cannot survive is not a crash. It is **a trajectory that
 looks real**. Every silent gap is worse than a loud refusal, and any change that turns
