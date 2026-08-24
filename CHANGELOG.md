@@ -9,6 +9,23 @@ how the package version relates to `STEP_VERSION`, the on-disk object format.
 
 ### Added
 
+- **An OpenEnv adapter — `state()` becomes a declared, witnessed world.** OpenEnv
+  (github.com/meta-pytorch/OpenEnv) standardises RL and agentic environments on three
+  methods: `reset()`, `step(action)`, `state()`. `noidroid.openenv.OpenEnvAdapter`
+  wraps any client shaped that way so `step` is mediated as a `write` — an OpenEnv
+  action mutates state that re-driving the recorded actions into a freshly reset
+  environment rebuilds, the same claim the browser adapter makes about a page — and
+  `state()` is reported after every live step, giving any conformant environment
+  `witnessed` grip with zero per-environment work. It re-drives actions the recording
+  served in its place before the first one it really performs, the same fifteen-line
+  obligation `Shift._catch_up` and `Browser._reconstruct` already carry, so a branch's
+  wrapped environment is genuinely caught up rather than cold when it starts making its
+  own choices — a new test, `the_counterfactual_environment_is_re_driven_rather_than_
+  assumed`, fails without it. `openenv` itself is not a dependency: the adapter is
+  duck-typed against the interface, not the package, and its test drives a hand-written
+  stand-in rather than a real environment — `state()`'s stability across real
+  environments from the ecosystem remains unverified and is the kill criterion this
+  adapter was built to test. (#66)
 - **`noidroid doctor` — what a recording would and would not cover, before one is
   made.** Automatic capture fails open by construction: every patching mechanism can
   miss a surface, and a recording that missed one still looks real. `--auto` already

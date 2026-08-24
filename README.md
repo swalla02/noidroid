@@ -683,6 +683,23 @@ rows = browser.scrape("tr.flight", ["data-id", "data-price"])["data"]
 pick = browser.decide("pick_flight", options=[r["data-id"] for r in rows], choice=rows[0]["data-id"])
 ```
 
+For OpenEnv-shaped environments, `noidroid.openenv.OpenEnvAdapter` wraps a `step`/`state`
+client so every action is mediated and every episode's state is reported without any
+per-environment work — `state()` is part of the standard's three-method baseline:
+
+```python
+from noidroid.openenv import OpenEnvAdapter
+
+env = OpenEnvAdapter(noidroid.connect(), client, env_id="my-env")
+result = env.step(action)
+```
+
+`step` is declared `write`: like a browser page, re-driving the recorded actions into a
+freshly reset environment rebuilds the state it left behind. See
+[`examples/openenv_agent/`](examples/openenv_agent) — driven against a small stand-in,
+since `openenv` is not installed here; `noidroid.openenv`'s module docstring says exactly
+what that leaves unverified.
+
 ---
 
 ## How it works
@@ -818,10 +835,11 @@ because an object's name *is* the hash of its bytes.
 ```
 crates/noidroid-core/   objects, store, workspace trees, the record/replay/branch engine
 crates/noidroid-cli/    the `noidroid` binary, the palette, the viewer, the Stand
-clients/python/         the client (stdlib only) and the browser adapter
+clients/python/         the client (stdlib only), the browser adapter, and the OpenEnv adapter
 examples/reference/     the reference environment: the whole lifecycle in 100 lines
 examples/flight_agent/  the example above
 examples/browser_agent/ the same idea driving real Chromium
+examples/openenv_agent/ the same idea against an OpenEnv-shaped environment
 docs/                   the environment contract, the technical proposal, the direction
 research/               the scout's knowledge base: discoveries, landscape, recommendations
 manifesto.md            the product vision this is built toward
