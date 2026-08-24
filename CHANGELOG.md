@@ -130,6 +130,29 @@ how the package version relates to `STEP_VERSION`, the on-disk object format.
   three call sites use distinct tags, which happened to keep them apart so far but is
   the same unguaranteed assumption. Both `tmp()` helpers now carry the same `SEQ`
   counter `Store::put` already uses. (#80)
+- **A live replay could re-perform an irreversible effect the recording already
+  charged for.** `on_call` had three arms that reach `execute`; two checked
+  `may_perform_irreversible()` first, and the arm for `Phase::Reconstructing if
+  runs_live(&target)` did not. `runs_live` is a prefix match — `--live world` covers
+  `world.charge` without anyone writing a glob — so `noidroid replay <trajectory>
+  --live world.charge` on a recording containing `world.charge` as
+  `EffectKind::Irreversible` ran it for real a second time, and `report.denied`
+  stayed empty because nothing was denied. Reproduced first with
+  `a_live_replay_still_refuses_an_irreversible_target`, which fails against the old
+  arm (the witness log shows `charge` twice) and passes once the arm routes through
+  the same `simulated_value` / `deny_irreversible` guard line 665's arm already used.
+  `noidroid replay`'s output now also prints a `denied:` line when a `--live` prefix
+  covers a recorded irreversible target, the same wording `branch` already used, so
+  the reason is on the screen and not just a `1 denied` in the delivery census. A
+  full pre-flight refusal (walking the recorded chain at `cmd_replay` time before the
+  program even starts) was considered and left out: only the *first* call a `--live`
+  prefix reaches is deterministically known before running — `expect_match` still
+  guarantees that one matches the recording — but anything after `gone_live` flips
+  the phase to `Counterfactual`, where the program can legitimately take a different
+  path, so a chain-wide pre-flight scan would refuse runs that were never going to
+  reach the covered target this time. The mid-run guard added here already fails
+  closed with zero side effects; a pre-flight warning is left as later, optional
+  work. (#87)
 - **The proxy test suite bound fixed ports, so a stale provider could be recorded
   instead of the one under test.** `Provider::start` polled `TcpStream::connect` and
   returned as soon as *something* answered on `8791`-`8794` — never checking that the
