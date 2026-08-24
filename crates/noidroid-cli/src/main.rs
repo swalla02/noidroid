@@ -1418,6 +1418,28 @@ fn print_verdict(ledger: &cost::Ledger, prices: &BTreeMap<String, cost::Price>) 
         );
         return;
     }
+    if ledger.calls_without_usage > 0 {
+        // A call whose usage cannot be read is not a call worth zero: something
+        // answered it, and nothing here says that cost nothing. Printing $0.00 would
+        // be exactly the quiet lie this command exists to refuse, so there is no
+        // figure — only the gap, named.
+        println!(
+            "  {} {} model call(s) reported nothing this tool could read — the total \
+             is unknown, not zero.",
+            warn("cost:"),
+            ledger.calls_without_usage
+        );
+        if !spent.usage.is_zero() {
+            println!(
+                "        {}",
+                dim(&format!(
+                    "{} was accounted for separately and is not part of that gap",
+                    usage_text(&spent.usage)
+                ))
+            );
+        }
+        return;
+    }
     if spent.usage.is_zero() {
         println!(
             "  {} {} — every model call was {}, so nothing was bought.",
@@ -1479,7 +1501,7 @@ fn print_ledger_line(
         return;
     }
     let spent = ledger.spent();
-    let money = if !ledger.undeliverable().usage.is_zero() {
+    let money = if !ledger.undeliverable().usage.is_zero() || ledger.calls_without_usage > 0 {
         warn("?")
     } else if spent.usage.is_zero() {
         ok("$0.00")
@@ -1488,7 +1510,12 @@ fn print_ledger_line(
     } else {
         dim("—")
     };
-    let note = if spent.usage.is_zero() {
+    let note = if ledger.calls_without_usage > 0 {
+        format!(
+            "— {} call(s) unaccounted, usage could not be read",
+            ledger.calls_without_usage
+        )
+    } else if spent.usage.is_zero() {
         format!("— {}", free_phrase(ledger))
     } else {
         String::new()

@@ -203,21 +203,30 @@ pub fn account(repo: &Repo, t: &Trajectory) -> Result<Ledger> {
             None => UNRECORDED,
         };
         let mut accounted = false;
+        // A recognisable streamed model response among this step's effects, whose
+        // usage could not be read out of it. Distinct from "not a model call at
+        // all" — collapsing the two would put the omission back where it started.
+        let mut unreadable_stream = false;
         for effect in &step.effects {
             let value: Value = repo.store.get_json(&effect.value)?;
-            let Some(reported) = reported_in(&value) else {
-                continue;
-            };
-            accounted = true;
-            let model = reported
-                .model
-                .or_else(|| named_model(args))
-                .unwrap_or_else(|| "unnamed model".to_string());
-            ledger.add(&model, delivery, &reported.usage);
+            match reported_or_unreadable(&value) {
+                Reading::Reported(reported) => {
+                    accounted = true;
+                    let model = reported
+                        .model
+                        .or_else(|| named_model(args))
+                        .unwrap_or_else(|| "unnamed model".to_string());
+                    ledger.add(&model, delivery, &reported.usage);
+                }
+                Reading::UnreadableStream => unreadable_stream = true,
+                Reading::NotAModelCall => {}
+            }
         }
-        // A call the adapter routed to a model, whose response says nothing about
-        // what it cost. Reporting it as zero would be the quiet lie.
-        if !accounted && target.starts_with("model.") {
+        // A call the adapter routed to a model, or a streamed response shaped
+        // recognisably like one, whose usage nothing here could read. Reporting it
+        // as zero would be the quiet lie; leaving it out entirely is the same lie
+        // one step removed — the total would look complete and would not be.
+        if !accounted && (target.starts_with("model.") || unreadable_stream) {
             ledger.calls_without_usage += 1;
         }
     }
@@ -239,6 +248,13 @@ pub struct Reported {
 /// Two shapes, both of which this repository records today: the response object as
 /// the model adapter stores it, and the HTTP exchange the recording proxy stores,
 /// whose body is that same object still in a string.
+///
+/// A third shape — a streamed response, whose usage is split across events rather
+/// than sitting in one object — is deliberately not handled here. It can be read
+/// (see [`reported_or_unreadable`]), but it can also fail to report usage at all,
+/// and that failure must be visible rather than folded into the same `None` that
+/// means "this was never a model call." This function keeps the simple two-shape
+/// case simple; `account` is where the honest distinction actually matters.
 pub fn reported_in(value: &Value) -> Option<Reported> {
     if let Some(reported) = direct(value) {
         return Some(reported);
@@ -246,6 +262,41 @@ pub fn reported_in(value: &Value) -> Option<Reported> {
     let body = value.as_object()?.get("body")?.as_str()?;
     let parsed: Value = serde_json::from_str(body).ok()?;
     direct(&parsed)
+}
+
+/// What came out of trying to read a call's own account of itself, keeping apart the
+/// two ways that can fail: this was never a model call, or it was one and it did not
+/// say what it used.
+enum Reading {
+    Reported(Reported),
+    /// A recognisable streamed model response with no usage anywhere in it.
+    UnreadableStream,
+    NotAModelCall,
+}
+
+/// [`reported_in`], extended to recognise a streamed response it cannot fully read.
+fn reported_or_unreadable(value: &Value) -> Reading {
+    if let Some(reported) = direct(value) {
+        return Reading::Reported(reported);
+    }
+    let Some(body) = value
+        .as_object()
+        .and_then(|o| o.get("body"))
+        .and_then(Value::as_str)
+    else {
+        return Reading::NotAModelCall;
+    };
+    if let Ok(parsed) = serde_json::from_str::<Value>(body) {
+        return match direct(&parsed) {
+            Some(reported) => Reading::Reported(reported),
+            None => Reading::NotAModelCall,
+        };
+    }
+    match reported_in_stream(body) {
+        Some(reported) => Reading::Reported(reported),
+        None if looks_like_a_model_stream(body) => Reading::UnreadableStream,
+        None => Reading::NotAModelCall,
+    }
 }
 
 fn direct(value: &Value) -> Option<Reported> {
@@ -257,6 +308,94 @@ fn direct(value: &Value) -> Option<Reported> {
     Some(Reported {
         usage: read_usage(usage),
         model: named_model(value),
+    })
+}
+
+/// The `type` (Anthropic) or `object` (OpenAI) values a model's own stream uses for
+/// its events, as opposed to any other server-sent event the proxy happened to pass
+/// through untouched. Recognising the shape mirrors how [`direct`] recognises a
+/// non-streamed response by its `usage` object: this keys off what the provider
+/// actually sent, not off the URL the request went to — the same request path can
+/// carry things that are not a model completion, and this must not claim they are.
+const STREAM_EVENT_TYPES: &[&str] = &[
+    "message_start",
+    "message_delta",
+    "message_stop",
+    "content_block_start",
+    "content_block_delta",
+    "content_block_stop",
+];
+
+fn is_model_stream_event(event: &Value) -> bool {
+    if matches!(
+        event.get("type").and_then(Value::as_str),
+        Some(kind) if STREAM_EVENT_TYPES.contains(&kind)
+    ) {
+        return true;
+    }
+    matches!(
+        event.get("object").and_then(Value::as_str),
+        Some("chat.completion.chunk")
+    )
+}
+
+/// One JSON value per `data:` line — the shape the recording proxy stores for a
+/// passed-through `text/event-stream` body, concatenated as it arrived. `[DONE]`
+/// (OpenAI's sentinel) is not JSON and is skipped rather than treated as a parse
+/// failure.
+fn sse_values(body: &str) -> Vec<Value> {
+    body.lines()
+        .filter_map(|line| line.strip_prefix("data:"))
+        .map(str::trim)
+        .filter(|data| *data != "[DONE]")
+        .filter_map(|data| serde_json::from_str::<Value>(data).ok())
+        .collect()
+}
+
+fn looks_like_a_model_stream(body: &str) -> bool {
+    sse_values(body).iter().any(is_model_stream_event)
+}
+
+/// Read a streamed call's own account of itself.
+///
+/// A stream never carries its usage in one JSON value. Anthropic reports the input
+/// count on `message_start` and the output count on `message_delta` — and despite
+/// the event's name, `message_delta.usage` is the *cumulative* count so far, not an
+/// increment, so the last value seen for a field is the total. OpenAI instead reports
+/// the whole thing once, in a `usage` object on the final chunk, and only when the
+/// caller asked for `stream_options.include_usage` — absent that, there is nothing
+/// to read, which is exactly the case this function must be able to say so about
+/// rather than pretend didn't happen.
+///
+/// `None` means no usage field was found anywhere in the stream; it does not mean
+/// this was not a model call, and callers must not conflate the two.
+fn reported_in_stream(body: &str) -> Option<Reported> {
+    let events = sse_values(body);
+    if events.is_empty() || !events.iter().any(is_model_stream_event) {
+        return None;
+    }
+    let mut fields = Map::new();
+    let mut model = None;
+    for event in &events {
+        let candidate = named_model(event).or_else(|| event.get("message").and_then(named_model));
+        if candidate.is_some() {
+            model = candidate;
+        }
+        let usage = event
+            .get("usage")
+            .or_else(|| event.get("message").and_then(|m| m.get("usage")));
+        if let Some(Value::Object(usage)) = usage {
+            for (name, count) in usage {
+                fields.insert(name.clone(), count.clone());
+            }
+        }
+    }
+    if fields.is_empty() {
+        return None;
+    }
+    Some(Reported {
+        usage: read_usage(&fields),
+        model,
     })
 }
 
