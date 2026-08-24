@@ -543,9 +543,11 @@ pick = nd.decide("route", options=candidates, choice=candidates[0])
 ```
 
 It also does not capture async clients, streaming responses, non-SDK HTTP, the clock,
-or randomness — and it will not quietly record around them. `--auto` prints what it
-hooked *and* what it could not, and **refuses to record** when it finds a surface it
-cannot cover:
+randomness, or what a child process does — and it will not quietly record around
+them. `--auto` prints what it hooked *and* what it could not, and **refuses to
+record** when it finds a surface it cannot cover. A subprocess is caught the moment
+the program actually spawns one — `subprocess.run`, `.call`, `Popen` directly, all of
+it — not merely a library that happens to import the module for its own reasons:
 
 ```console
 $ noidroid run --auto -- python3 agent.py

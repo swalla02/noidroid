@@ -21,7 +21,8 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use noidroid_core::engine::{self, Mode, RunSpec};
-use noidroid_core::Repo;
+use noidroid_core::model::Action;
+use noidroid_core::{Grip, Repo};
 
 const FAKE_API: &str = r#"
 import json
@@ -335,6 +336,178 @@ fn a_capture_gap_stops_the_recording_unless_it_is_allowed() {
     )
     .expect("replay should run to completion");
     assert!(report.faithful(), "{:?}", report.divergences);
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// A program that shells out, and nothing else out of the ordinary. No SDK needed:
+/// the hole being tested is the child process, not the model call.
+const SHELLS_OUT: &str = r#"
+import subprocess
+import sys
+
+import noidroid
+
+nd = noidroid.connect()
+nd.call("work.start", lambda: {"ok": True})
+subprocess.run([sys.executable, "-c", "pass"], check=True)
+nd.call("work.end", lambda: {"ok": True})
+nd.finish("success", {})
+"#;
+
+fn shelling_agent(dir: &Path) -> PathBuf {
+    let agent = dir.join("shells.py");
+    fs::write(&agent, SHELLS_OUT).unwrap();
+    agent
+}
+
+fn scratch(tag: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "noidroid-{tag}-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+/// A subprocess is outside everything this tool does: it is not mediated, the egress
+/// fence never patched its socket module, and no step records what it touched. The
+/// one thing that must not happen is passing silently.
+///
+/// Unlike the async-client hole, this cannot be caught before the program runs --
+/// nothing is known about it until the moment it happens -- so by the time it is
+/// detected, steps before it may already be recorded. The engine's answer to a child
+/// that dies mid-run is not to erase what already happened: it keeps the steps taken,
+/// marks the run `aborted` with the exit code, and the refusal is what the program's
+/// own last words say. This is the same handling `record` gives any program that dies
+/// unexpectedly, exercised here for a death this project causes on purpose.
+#[test]
+fn a_program_that_shells_out_is_refused_rather_than_half_recorded() {
+    if sdk_available() {
+        // Inverted relative to this file's other gate: `install()` patches every
+        // SDK it finds installed, whether or not the program under test imports it,
+        // so an environment with anthropic present always hits the async-client
+        // hole (#33) before the shelling agent's own `import subprocess` line ever
+        // runs, and refuses for that unrelated reason first. Isolating the claim
+        // this test makes needs an environment with no SDK gap to confound it.
+        eprintln!(
+            "SKIP: needs an environment with no capturable SDK installed, so #33's \
+             async-client refusal does not mask the one under test here"
+        );
+        return;
+    }
+
+    let dir = scratch("spawn-refused");
+    let agent = shelling_agent(&dir);
+    let repo = Repo::open(&dir).unwrap();
+    let pythonpath = format!("{}:{}", bootstrap_path().display(), client_path().display());
+
+    let spec = RunSpec {
+        command: vec!["python3".into(), agent.display().to_string()],
+        launch_dir: dir.clone(),
+        name: Some("blocked".into()),
+        env: vec![("PYTHONPATH".into(), pythonpath)],
+        auto: true,
+        watch: None,
+    };
+
+    let report = engine::run(&repo, &spec, Mode::Record, None)
+        .expect("the engine completes even though the program aborted");
+    let said = report
+        .last_words
+        .as_deref()
+        .expect("a program that died should have last words");
+    assert!(
+        said.contains("subprocess") && said.contains("--allow-gaps"),
+        "the refusal must name the hole and the way past it, got: {said}"
+    );
+    assert_eq!(
+        report.exit_code,
+        Some(2),
+        "the program's own refusal exit code should reach the report"
+    );
+
+    let trajectory = repo
+        .load_trajectory("blocked")
+        .expect("what was recorded before the refusal is still worth keeping");
+    assert_eq!(
+        trajectory.outcome.status, "aborted",
+        "a program that died mid-run is not a program that finished"
+    );
+    let chain = repo.chain(&trajectory).unwrap();
+    assert!(
+        chain
+            .iter()
+            .all(|(_, s)| !matches!(s.action, Action::Finish { .. })),
+        "the recording must stop before the subprocess call, not after a finish that \
+         never happened"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// Allowed, it records — and the recording itself says the program shelled out and
+/// that whatever the child did is outside it. Said in the trajectory, not only in a
+/// log line: `subprocess` is a declared world nobody observed, so every step from
+/// there on is `opaque` and `noidroid log` and `show` print it.
+#[test]
+fn a_program_that_can_shell_out_says_so_in_its_recording() {
+    let dir = scratch("spawn-declared");
+    let agent = shelling_agent(&dir);
+    let repo = Repo::open(&dir).unwrap();
+    let pythonpath = format!("{}:{}", bootstrap_path().display(), client_path().display());
+
+    let spec = RunSpec {
+        command: vec!["python3".into(), agent.display().to_string()],
+        launch_dir: dir.clone(),
+        name: Some("gapped".into()),
+        env: vec![
+            ("PYTHONPATH".into(), pythonpath),
+            ("NOIDROID_ALLOW_GAPS".into(), "1".into()),
+        ],
+        auto: true,
+        watch: None,
+    };
+
+    let report = engine::run(&repo, &spec, Mode::Record, None)
+        .expect("--allow-gaps should record a program that shells out");
+    let recorded = report.trajectory.clone().expect("a recording is produced");
+
+    let declared = recorded
+        .worlds
+        .iter()
+        .find(|w| w.name == "subprocess")
+        .expect("the recording must declare the subprocess it could not capture");
+    assert_eq!(
+        declared.grip,
+        Grip::Opaque,
+        "a child process is not observed and not restorable, so it is opaque"
+    );
+    assert_eq!(
+        report.grip,
+        Grip::Opaque,
+        "the run can claim no more than its weakest part"
+    );
+
+    // The claim is about what the *recording* says, so it has to survive a reload
+    // rather than only live in the report we happen to be holding.
+    let reloaded = repo.load_trajectory("gapped").unwrap();
+    assert!(
+        reloaded.worlds.iter().any(|w| w.name == "subprocess"),
+        "the limitation is part of the trajectory, not of one process's memory"
+    );
+
+    // And the steps after the spawn carry it, so `show` on any of them says opaque
+    // rather than claiming a workspace snapshot is the whole world.
+    let chain = repo.chain(&reloaded).unwrap();
+    assert!(
+        chain.iter().any(|(_, s)| s.grip == Grip::Opaque),
+        "the steps taken after the spawn must say what they are worth"
+    );
 
     let _ = fs::remove_dir_all(&dir);
 }

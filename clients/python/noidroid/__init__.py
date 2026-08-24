@@ -349,15 +349,32 @@ class _PassThrough:
         return None
 
 
+#: The one live connection this process holds, if any. `connect()` is meant to be
+#: called once per program, but automatic capture may need its own connection before
+#: the program makes one -- to declare a gap it found, say -- and the engine only ever
+#: accepts a single stream per run. A second, independent `Session` would open a
+#: socket the engine is not listening for and hang forever on its first reply, so a
+#: process gets exactly one, whoever asks for it first.
+_active_session: Optional["Session"] = None
+
+
 def connect():
-    """Connect to the engine, or return a pass-through session if not recorded."""
+    """Connect to the engine, or return a pass-through session if not recorded.
+
+    Idempotent within a process: a second call returns the session the first one
+    made, rather than opening a socket nothing will ever accept.
+    """
+    global _active_session
     path = os.environ.get("NOIDROID_SOCKET")
     if not path:
         return _PassThrough()
+    if _active_session is not None:
+        return _active_session
     # During a reconstruction nothing should reach the network: everything is served
     # from the recording. Anything that still tries was never recorded, and saying so
     # loudly is the whole point.
     from . import fence
 
     fence.install_for_mode()
-    return Session(path)
+    _active_session = Session(path)
+    return _active_session
