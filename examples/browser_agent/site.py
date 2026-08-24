@@ -110,6 +110,12 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def serve(port):
+    # ThreadingHTTPServer.server_bind() calls socket.getfqdn(host), a reverse DNS
+    # lookup that has stalled for tens of seconds on some CI hosts and delayed the
+    # announce line the browser test waits on for a port number.
+    import socket
+
+    socket.getfqdn = lambda *a, **k: "localhost"
     return ThreadingHTTPServer(("127.0.0.1", port), Handler)
 
 

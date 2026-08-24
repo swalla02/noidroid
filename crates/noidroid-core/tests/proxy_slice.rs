@@ -46,6 +46,13 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+# ThreadingHTTPServer.server_bind() calls socket.getfqdn(host) to set
+# self.server_name, which is a REVERSE DNS LOOKUP -- and on some CI hosts that
+# has taken tens of seconds for "127.0.0.1", stalling the print() that the Rust
+# side is waiting on for a port number, which then reads as "never announced a
+# port" rather than what it actually is: a DNS lookup nobody asked for.
+import socket
+socket.getfqdn = lambda *a, **k: "localhost"
 server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
 print(server.server_address[1], flush=True)
 server.serve_forever()
@@ -95,6 +102,13 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(b"0\r\n\r\n")
         self.wfile.flush()
 
+# ThreadingHTTPServer.server_bind() calls socket.getfqdn(host) to set
+# self.server_name, which is a REVERSE DNS LOOKUP -- and on some CI hosts that
+# has taken tens of seconds for "127.0.0.1", stalling the print() that the Rust
+# side is waiting on for a port number, which then reads as "never announced a
+# port" rather than what it actually is: a DNS lookup nobody asked for.
+import socket
+socket.getfqdn = lambda *a, **k: "localhost"
 server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
 print(server.server_address[1], flush=True)
 server.serve_forever()
@@ -154,6 +168,13 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+# ThreadingHTTPServer.server_bind() calls socket.getfqdn(host) to set
+# self.server_name, which is a REVERSE DNS LOOKUP -- and on some CI hosts that
+# has taken tens of seconds for "127.0.0.1", stalling the print() that the Rust
+# side is waiting on for a port number, which then reads as "never announced a
+# port" rather than what it actually is: a DNS lookup nobody asked for.
+import socket
+socket.getfqdn = lambda *a, **k: "localhost"
 server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
 print(server.server_address[1], flush=True)
 server.serve_forever()
@@ -178,6 +199,13 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(BODY)
 
+# ThreadingHTTPServer.server_bind() calls socket.getfqdn(host) to set
+# self.server_name, which is a REVERSE DNS LOOKUP -- and on some CI hosts that
+# has taken tens of seconds for "127.0.0.1", stalling the print() that the Rust
+# side is waiting on for a port number, which then reads as "never announced a
+# port" rather than what it actually is: a DNS lookup nobody asked for.
+import socket
+socket.getfqdn = lambda *a, **k: "localhost"
 server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
 print(server.server_address[1], flush=True)
 server.serve_forever()
