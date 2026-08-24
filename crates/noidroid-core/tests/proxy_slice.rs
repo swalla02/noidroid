@@ -531,7 +531,9 @@ fn announced_port(stdout: ChildStdout) -> Option<u16> {
         let _ = BufReader::new(stdout).read_line(&mut line);
         let _ = tx.send(line);
     });
-    let line = rx.recv_timeout(Duration::from_secs(10)).ok()?;
+    // A macOS CI runner spawning several python3 children at once has taken longer
+    // than 10s here; 30s still fails loudly on a genuinely stuck child.
+    let line = rx.recv_timeout(Duration::from_secs(30)).ok()?;
     line.trim().parse().ok()
 }
 
