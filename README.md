@@ -532,6 +532,15 @@ the files too. A server-sent event stream is passed through as it arrives, so an
 under recording sees its tokens on the same schedule as one that is not; everything
 else is still read in full before it is written back.
 
+A trajectory holds a body as text, so the proxy refuses rather than record anything
+that is not: a binary response (Anthropic's Files API, OpenAI's speech endpoints), a
+content coding it does not implement (it asks upstream for `identity` and inflates
+gzip or deflate if a provider sends one anyway; brotli or zstd fails the call), and an
+event stream a provider compressed despite that request — inflating one incrementally,
+without disturbing the schedule the passthrough exists to preserve, is a second
+mechanism nobody has needed yet (#72). Each refusal lands in the trajectory as a
+failed step with the reason, not a body full of replacement characters.
+
 ### What neither can do
 
 What automatic capture **cannot** do is branch. No amount of patching can infer that a

@@ -95,6 +95,19 @@ how the package version relates to `STEP_VERSION`, the on-disk object format.
   `apply_intervention` is reachable only from `on_call`/`on_decide`. An event the
   program never asked about cannot be injected — that needs preemption, which this
   project does not have. (#79)
+- **The proxy's non-text refusals are now written down, not just implemented.** #56
+  made the proxy refuse, rather than mangle, a binary response body (Files API
+  downloads, audio), a content coding it does not implement (brotli, zstd), and — a
+  third case, already refused but never named anywhere a caller would read it first —
+  an event stream a provider compresses despite `identity`. The README's proxy section
+  and the module's own docstring now say all three plainly. The general fix — store
+  bytes with their encoding declared instead of assuming they are text — touches the
+  on-disk object format and `STEP_VERSION`, which is a larger decision than any of
+  these three deserves; it stays out of scope until someone actually needs it.
+  Inflating a compressed event stream incrementally, the one piece of this that is
+  code rather than documentation, stays unbuilt too: nobody has hit a provider that
+  compresses SSE despite asking for `identity`, and a fix with no real case to test
+  against is exactly the speculative infrastructure this project refuses. (#72)
 - **A divergence caused by a clock or a random id now says so.** A timestamp or a UUID
   in a call argument makes every replay diverge, and the report named two long values
   and left the reader to notice that one of them was a clock — then guessed, wrongly,
