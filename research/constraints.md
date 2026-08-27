@@ -23,7 +23,7 @@ Seeded from `docs/direction.md` and the issue history on 2026-08-19. Grows from
 | C7 | **Token-level branching would need a weaker evidence standard than hash equality.** | Rejected on the evidence standard, not on difficulty. | #20 | Someone demonstrates token-level branching with a verifiable reconstruction claim. |
 | C8 | **Training runs as the branchable unit — parked.** | Scope; the engine has to earn its claim on ordinary executions first. | #22 | Parked, not rejected. Re-time it, do not re-argue it. |
 | C9 | **Not building:** a dashboard, distributed storage, an agent framework, a universal simulator, or speculative infrastructure for a user who has not appeared yet. | Crowded, or premature. The engine is the only thing worth installing. | direction.md | A real user with a real workload, not a market observation. |
-| C10 | **Adoption work is parked, not forgotten** (#37 installable artifact, #38 framework answer). | The current priority is the engine. | direction.md | It is a sequencing decision. A finding that makes adoption *cheaper* is still useful — file it, do not campaign. |
+| C10 | **Adoption work is parked, not forgotten** (#38 framework answer). The installable artifact half is no longer parked: `install.sh` ships, and #104 covers the rest. | The current priority is the engine. Installation was the exception, because an engine nobody can run is not evidence of anything. | direction.md, #103 | It is a sequencing decision. A finding that makes adoption *cheaper* is still useful — file it, do not campaign. |
 
 ## How to use this file
 

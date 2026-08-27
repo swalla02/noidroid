@@ -452,19 +452,46 @@ you need, because nothing is said in colour that is not also said in words.
 
 ## Quickstart
 
-Requires Rust ≥ 1.74, Python ≥ 3.9, Linux or macOS.
+```bash
+curl -fsSL https://raw.githubusercontent.com/swalla02/noidroid/main/install.sh | sh
+```
+
+x86_64 and arm64, Linux and macOS. The binary lands in `~/.local/bin`; set
+`NOIDROID_INSTALL_DIR` to put it somewhere else, or `NOIDROID_VERSION` to pin a
+release. It is checked against its published SHA-256 before it is installed.
+
+```bash
+noidroid stand        # 「 ゴ ゴ ゴ ゴ 」
+```
+
+Then, to record something. The example agent lives in the repository, and the
+Python client is what a recorded program talks to, so this part still wants a
+clone — [#104](https://github.com/swalla02/noidroid/issues/104) is about
+removing that. Python ≥ 3.9:
 
 ```bash
 git clone https://github.com/swalla02/noidroid && cd noidroid
-cargo build --release
-export PATH=$PWD/target/release:$PATH
-export PYTHONPATH=$PWD/clients/python        # or: pip install -e clients/python
+pip install -e clients/python
 
 noidroid run -- python3 examples/flight_agent/agent.py
 noidroid show run-1@2
 noidroid branch run-1@2 --decide pick_flight=FL-203 --simulate 'payments.charge={"ok":true}'
 noidroid diff run-1 alt-1
 ```
+
+<details>
+<summary>Building it yourself instead</summary>
+
+Requires Rust ≥ 1.74.
+
+```bash
+git clone https://github.com/swalla02/noidroid && cd noidroid
+cargo build --release
+export PATH=$PWD/target/release:$PATH
+export PYTHONPATH=$PWD/clients/python        # or: pip install -e clients/python
+```
+
+</details>
 
 | Command | |
 |---|---|

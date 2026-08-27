@@ -75,6 +75,23 @@ jobs:
             exit 1
           fi
 
+  install:
+    name: install.sh works (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      # install.sh is the first command a new user runs, so it is the last one
+      # that should go untested until a release exercises it.
+      - run: .github/scripts/install-smoke.sh
+
   test-without-browser:
     name: tests (no browser installed)
     runs-on: ubuntu-latest
