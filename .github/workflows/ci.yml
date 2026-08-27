@@ -75,6 +75,15 @@ jobs:
             exit 1
           fi
 
+  release-gate:
+    name: the release gate decides correctly
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # The gate only ever runs on a tag push, so this is the only place its
+      # decisions are exercised before one is cut.
+      - run: .github/scripts/verify-tag.test.sh
+
   test-without-browser:
     name: tests (no browser installed)
     runs-on: ubuntu-latest
