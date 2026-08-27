@@ -8,49 +8,25 @@ on:
 
 permissions:
   contents: write
+  checks: read
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
   verify:
-    name: gate the tag on the full suite
+    name: gate the tag on what CI already proved
     runs-on: ubuntu-latest
     steps:
+      # The whole history, and the tags: the gate asks whether this commit is an
+      # ancestor of origin/main, which a shallow clone cannot answer.
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
         with:
-          python-version: "3.12"
-      - name: Install Playwright
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install playwright
-          echo "PW_VERSION=$(python -m playwright --version | tr ' ' '-')" >> "$GITHUB_ENV"
-      - name: Cache the browser
-        id: browser-cache
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/ms-playwright
-          key: ${{ runner.os }}-${{ env.PW_VERSION }}-chromium
-      - name: Install Chromium
-        # System packages are not cached, so they install either way; only the
-        # browser download is skipped on a hit.
-        run: |
-          if [ "${{ steps.browser-cache.outputs.cache-hit }}" = "true" ]; then
-            python -m playwright install-deps chromium
-          else
-            python -m playwright install --with-deps chromium
-          fi
-      - run: cargo test --all
-      - name: The tag must match the version in Cargo.toml
-        run: |
-          set -euo pipefail
-          declared=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
-          tagged="${GITHUB_REF_NAME#v}"
-          if [ "$declared" != "$tagged" ]; then
-            echo "::error::tag $GITHUB_REF_NAME does not match Cargo.toml version $declared"
-            exit 1
-          fi
+          fetch-depth: 0
+      - name: The tag must be on main, match Cargo.toml, and have passed CI
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: .github/scripts/verify-tag.sh
 
   build:
     name: ${{ matrix.target }}
