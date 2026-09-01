@@ -43,7 +43,7 @@ jobs:
           echo "PW_VERSION=$(python -m playwright --version | tr ' ' '-')" >> "$GITHUB_ENV"
       - name: Cache the browser
         id: browser-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/ms-playwright
           key: ${{ runner.os }}-${{ env.PW_VERSION }}-chromium
