@@ -502,6 +502,18 @@ Against the six environments:
 | Robot | sensor/actuator | physical | `opaque` | no | reachable, unverifiable; actuation is `irreversible` |
 | Autonomous lab | instruments/protocols | physical + consumables | `opaque` | no | most checkpoints are `unreachable`: reagents do not come back |
 | Production service | outbound calls | other people's state | `opaque` | no | branch with `--simulate`; irreversible writes denied |
+| Model provider | model calls | none, or a server-held session | none when self-contained; `opaque` when a request names a session | no | see below |
+
+**The model provider** is the one environment every agent recording touches. A request
+that carries its whole context (`messages=[...]`) has no world: every answer is recorded,
+and a content-addressed prompt cache is keyed by what was sent, so it cannot disagree
+with it. A request that names state the provider holds between calls, such as OpenAI's
+`previous_response_id` or `conversation`, does have one, and it is `opaque`. It only
+matters in `replay --live`: the live call continues a session whose earlier turns were
+served from the recording and never reached the provider. The replay names each such
+step instead of calling the result comparable (#91). None of the client paths (`llm`,
+`--auto`, `--proxy`, the raw protocol) creates a handle; all of them pass through
+whatever the program sends.
 
 Note what the table does **not** say: that these are the same. A laboratory
 checkpoint is usually unreachable and a Python one usually is not. The contract's job

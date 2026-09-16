@@ -762,6 +762,39 @@ fn cmd_show(repo: &Repo, reference: &str) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
+/// Request fields that name state a provider holds between calls. A request carrying
+/// one is not self-contained: sending it live during a replay asks the provider to
+/// continue a session whose earlier turns were served from the recording and never
+/// reached it (#91). Content-addressed prompt caching is not on this list — it is keyed
+/// by what is sent, so it cannot disagree with it.
+const SESSION_HANDLE_KEYS: &[&str] = &["previous_response_id", "conversation"];
+
+/// Recorded calls a `--live` prefix covers whose arguments carry a session handle.
+fn session_handles(
+    chain: &[(noidroid_core::Digest, Step)],
+    live: &[String],
+) -> Vec<(u64, String, &'static str)> {
+    let covered = |target: &str| {
+        live.iter()
+            .any(|p| target == p || target.starts_with(&format!("{p}.")))
+    };
+    let mut out = Vec::new();
+    for (_, step) in chain {
+        let Action::Call { target, args, .. } = &step.action else {
+            continue;
+        };
+        if !covered(target) {
+            continue;
+        }
+        for key in SESSION_HANDLE_KEYS {
+            if args.get(key).is_some_and(|v| !v.is_null()) {
+                out.push((step.index, target.clone(), *key));
+            }
+        }
+    }
+    out
+}
+
 fn cmd_replay(
     repo: &Repo,
     cwd: &Path,
@@ -790,6 +823,7 @@ fn cmd_replay(
         watch: None,
     };
     let live_targets = live.clone();
+    let handles = session_handles(&repo.chain(&t)?, &live_targets);
     let report = engine::run(repo, &spec, Mode::Replay { live }, Some(&t))?;
     println!(
         "{} {}{}",
@@ -801,6 +835,14 @@ fn cmd_replay(
             dim(&format!("  live: {}", live_targets.join(", ")))
         }
     );
+    for (index, target, key) in &handles {
+        println!(
+            "  {} @{index} {target} sends `{key}`: the provider continues a server-side \
+             session the replayed prefix never sent it, so this live answer can differ \
+             for a reason the replay cannot see",
+            warn("note:")
+        );
+    }
     println!(
         "  {:<22} {}",
         dim("steps re-derived"),
