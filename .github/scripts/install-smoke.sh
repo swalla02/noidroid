@@ -66,7 +66,11 @@ export NOIDROID_INSTALL_DIR="$work/bin"
 # 1. A good download installs, and the thing it installs runs.
 sh "$root/install.sh"
 [ -x "$work/bin/noidroid" ] || { echo "install.sh produced no binary"; exit 1; }
-"$work/bin/noidroid" stand | grep -q "PARANOID ANDROID"
+# Captured before matching, not piped: `grep -q` exits at the first match, the binary
+# dies of SIGPIPE writing the rest (it restores the default disposition on purpose),
+# and under pipefail that is exit 141. Linux usually wins the race; macOS did not.
+stand=$("$work/bin/noidroid" stand)
+grep -q "PARANOID ANDROID" <<<"$stand"
 "$work/bin/noidroid" --version
 echo "ok   - install.sh installs a working noidroid"
 
