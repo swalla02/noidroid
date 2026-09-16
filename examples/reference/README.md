@@ -173,6 +173,29 @@ The recording still replays and still branches. It simply cannot be shown to hav
 landed in the same place — which is the truth about a robot, and worth more than a
 number invented to fill the gap.
 
+## Seeing an adapter that forgets to re-drive
+
+`REFERENCE_BLIND` declares the reactor and admits it is not looking. `REFERENCE_MUTE`
+says nothing at all, which is the failure that used to be invisible: the branch really
+moves the rods, never reports what it did to them, and is handed the recorded
+fingerprint instead — so the state address matches because it could not do anything
+else.
+
+```bash
+noidroid branch shift@2 --decide move=insert --label honest
+REFERENCE_MUTE=1 noidroid branch shift@2 --decide move=insert --label muted
+```
+
+Same run, same steps, and only the second says:
+
+```
+  world not re-driven    reactor (served from the recording; nothing was checked)
+```
+
+The engine still cannot check that you re-drove the reactor — nothing outside the
+program can see it. What it can tell is that you never said you had. See
+[docs/environment-model.md](../../docs/environment-model.md) §7.1.
+
 ## Files
 
 ```

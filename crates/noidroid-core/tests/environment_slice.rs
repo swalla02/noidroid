@@ -96,9 +96,37 @@ impl Fixture {
         label: &str,
         choice: &str,
     ) -> noidroid_core::Result<Report> {
+        self.branch_with(t, at, label, choice, false)
+    }
+
+    /// Branch with an adapter that says nothing about the reactor at all: it acts on
+    /// the world and never reports what it did to it.
+    fn branch_muted(
+        &self,
+        t: &Trajectory,
+        at: u64,
+        label: &str,
+        choice: &str,
+    ) -> noidroid_core::Result<Report> {
+        self.branch_with(t, at, label, choice, true)
+    }
+
+    fn branch_with(
+        &self,
+        t: &Trajectory,
+        at: u64,
+        label: &str,
+        choice: &str,
+        mute: bool,
+    ) -> noidroid_core::Result<Report> {
+        let mut spec = self.spec(Some(label), false);
+        if mute {
+            spec.env
+                .push(("REFERENCE_MUTE".to_string(), "1".to_string()));
+        }
         engine::run(
             &self.repo,
-            &self.spec(Some(label), false),
+            &spec,
             Mode::Branch {
                 at,
                 intervention: Intervention::ReplaceDecision {
@@ -499,4 +527,64 @@ fn restoring_the_workspace_under_a_witnessed_world_is_not_a_divergence() {
         .trajectory
         .expect("the checkpoint is reachable, so the branch is written down");
     assert_eq!(branch.outcome.status, "success");
+}
+
+#[test]
+fn a_counterfactual_that_acts_without_redriving_its_world_is_not_reported_as_witnessed() {
+    // The failure this exists to catch: the recording holds a fingerprint for every
+    // step, so an adapter that acts on the reactor and never says what it did to it
+    // gets handed the recorded fingerprint, hashes to the recorded address by
+    // construction, and reports that fingerprints were compared. Nothing was compared.
+    // The two adapters must not produce the same word.
+    let f = Fixture::new("mute");
+    let parent = f.record("shift", false);
+    assert_eq!(
+        parent.worlds[0].grip,
+        Grip::Witnessed,
+        "the recording saw it"
+    );
+
+    let honest = f
+        .branch(&parent, decision_at(0), "honest", "insert")
+        .expect("the checkpoint is reachable");
+    assert_eq!(
+        honest.grip,
+        Grip::Witnessed,
+        "the adapter re-drove the reactor and reported it: the comparison is real"
+    );
+
+    let mute = f
+        .branch_muted(&parent, decision_at(0), "mute", "insert")
+        .expect("the checkpoint is reachable");
+    assert_eq!(
+        mute.grip,
+        Grip::Opaque,
+        "the same run without the re-drive proved nothing about the reactor, and \
+         must not be reported as though it had"
+    );
+}
+
+#[test]
+fn the_report_names_the_world_it_was_handed_rather_than_shown() {
+    // "opaque" alone tells a reader that something went unproven, not what. A run with
+    // four declared worlds and one silent adapter has to say which one.
+    let f = Fixture::new("named");
+    let parent = f.record("shift", false);
+
+    let mute = f
+        .branch_muted(&parent, decision_at(0), "mute", "insert")
+        .expect("the checkpoint is reachable");
+    assert_eq!(
+        mute.served.iter().cloned().collect::<Vec<String>>(),
+        vec!["reactor".to_string()],
+        "the report names the world nobody looked at"
+    );
+
+    let honest = f
+        .branch(&parent, decision_at(0), "honest", "insert")
+        .expect("the checkpoint is reachable");
+    assert!(
+        honest.served.is_empty(),
+        "an adapter that did the work is not named"
+    );
 }

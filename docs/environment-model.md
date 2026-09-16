@@ -344,13 +344,24 @@ actions into a fresh browser with the recorded network responses re-served, and
 about fifteen lines in each case, and it is the difference between a counterfactual and
 a plausible-looking fiction.
 
-**The engine cannot check that you did it.** If an adapter skips the re-drive, the run
-still completes, still hashes consistently and still reports a clean outcome — while
-describing a physics that never happened. This is a real, structural limit: the only
-source of truth about a world the engine cannot see is the program that can. What the
-model does is make the obligation *explicit* (grip `witnessed` means "must be
-re-driven") and give the adapter the fingerprint to check itself against. A recording
-that fails to declare its world at all does not get even that.
+**The engine cannot check that you did it — but it can see that you never said you
+had.** The structural limit is real and does not move: the only source of truth about a
+world the engine cannot see is the program that can, so an adapter that re-observes
+without re-driving gets a `witnessed` it has not earned. What the engine *can* tell is
+whether the adapter spoke at all. A step that really executed something, against a world
+the program then said nothing about, was handed the recorded fingerprint — so its
+address matched because it could not do anything else. The run reports `opaque` and
+names the world:
+
+```text
+  world not re-driven    reactor (served from the recording; nothing was checked)
+```
+
+That is a statement about *this execution*, not about the trajectory. The step keeps the
+grip the recording holds, because that is a property of the recording; nothing hashed
+moves. Silence used to pass as a check that succeeded, and now it is recorded as
+silence — which is the whole of the improvement and no more. A recording that fails to
+declare its world at all does not get even that.
 
 **Observations obey the recorded-input oracle.** During reconstruction the program is
 not touching the world, so it has nothing new to say about it, and the engine serves the
@@ -358,6 +369,12 @@ recorded observation in its place — testimony is an input like any other. A pr
 *did* re-drive reports, its report wins, and the difference surfaces as a state
 mismatch. That is the only case in which comparing fingerprints tells you anything, and
 it is exactly the case worth comparing.
+
+Serving an observation is only honest while nothing is being performed. A step whose
+delivery is `replayed` executed nothing and claims nothing, so a served observation
+there costs it nothing — a plain `noidroid replay`, which never issues `execute` at all,
+is unaffected end to end. A step whose delivery is `executed` did something to the
+world, and a served observation there is the case above.
 
 **Reconstruction is bounded by capture.** A prefix containing an effect with provenance
 `unknown` re-derives correctly — the recording holds what the program saw — but every

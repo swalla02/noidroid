@@ -1957,6 +1957,17 @@ fn print_census(report: &Report) {
     if !delivery.is_empty() {
         println!("  {:<22} {}", dim("steps by delivery"), delivery.join(", "));
     }
+    // The world the program acted on and never spoke about. Its fingerprint came from
+    // the recording, so the address matched because it could not do anything else --
+    // and a reader who is not told that will read the match as a check that passed.
+    if !report.served.is_empty() {
+        println!(
+            "  {:<22} {} {}",
+            dim("world not re-driven"),
+            warn(&report.served.iter().cloned().collect::<Vec<_>>().join(", ")),
+            dim("(served from the recording; nothing was checked)")
+        );
+    }
 }
 
 /// What `noidroid doctor` would already say about this program, said once, here,
