@@ -73,6 +73,10 @@ enum Command {
     Log {
         /// Trajectory name. Omit to list everything.
         trajectory: Option<String>,
+        /// List every irreversible effect anywhere in this trajectory's family of
+        /// branches, once each, and whether it was performed, simulated or denied.
+        #[arg(long, requires = "trajectory")]
+        irreversible: bool,
     },
     /// Inspect a checkpoint: what is known there, and how to explore from it.
     Show {
@@ -277,7 +281,11 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
             },
             command,
         ),
-        Command::Log { trajectory } => cmd_log(&repo, trajectory),
+        Command::Log {
+            trajectory: Some(name),
+            irreversible: true,
+        } => cmd_irreversible(&repo, &name),
+        Command::Log { trajectory, .. } => cmd_log(&repo, trajectory),
         Command::Show { reference } => cmd_show(&repo, &reference),
         Command::Replay {
             trajectory,
@@ -468,6 +476,122 @@ fn cmd_run(repo: &Repo, cwd: &Path, flags: RunFlags, command: Vec<String>) -> Re
         }
         None => Err(Error::Protocol("nothing was recorded".into())),
     }
+}
+
+/// Every irreversible effect anywhere in a trajectory's family: the root it was
+/// branched from, and every branch of that root at any depth (#92).
+///
+/// A walk and a filter over data every step already carries. Two things make it more
+/// than a grep. A branch shares its parent's prefix *objects*, so an effect is keyed by
+/// its step's address and listed once, under the trajectory that recorded it first.
+/// And an effect carrying a value was not necessarily performed: a `--simulate`d one
+/// has a value nobody produced, and saying "performed" for it would be the lie this
+/// record exists to prevent.
+fn cmd_irreversible(repo: &Repo, name: &str) -> Result<ExitCode> {
+    let all = repo.list_trajectories()?;
+    let by_name: BTreeMap<&str, &Trajectory> = all.iter().map(|t| (t.name.as_str(), t)).collect();
+    let root_of = |t: &Trajectory| -> String {
+        let mut cursor = t;
+        let mut seen = std::collections::BTreeSet::new();
+        while let Some(parent) = cursor
+            .forked_from
+            .as_ref()
+            .and_then(|f| by_name.get(f.trajectory.as_str()))
+        {
+            if !seen.insert(parent.name.clone()) {
+                break;
+            }
+            cursor = parent;
+        }
+        cursor.name.clone()
+    };
+    let start = by_name
+        .get(name)
+        .ok_or_else(|| Error::NotFound(format!("trajectory '{name}'")))?;
+    let root = root_of(start);
+    // `list_trajectories` is ordered by creation, so the first trajectory holding a
+    // step is the one that recorded it.
+    let family: Vec<&Trajectory> = all.iter().filter(|t| root_of(t) == root).collect();
+
+    struct Found {
+        index: u64,
+        target: String,
+        status: &'static str,
+        recorded_in: String,
+        shared_by: usize,
+    }
+    let mut found: BTreeMap<String, Found> = BTreeMap::new();
+    let mut order: Vec<String> = Vec::new();
+    for t in &family {
+        for (digest, step) in repo.chain(t)? {
+            let Some(effect) = step
+                .effects
+                .iter()
+                .find(|e| e.effect == noidroid_core::model::EffectKind::Irreversible)
+            else {
+                continue;
+            };
+            let key = digest.to_string();
+            if let Some(existing) = found.get_mut(&key) {
+                existing.shared_by += 1;
+                continue;
+            }
+            use noidroid_core::model::EffectOutcome;
+            let status = match (effect.outcome, effect.provenance) {
+                (EffectOutcome::Denied, _) => "denied",
+                (EffectOutcome::Error, _) => "failed",
+                (EffectOutcome::Unavailable, _) => "unavailable",
+                (EffectOutcome::Value, Provenance::Simulated | Provenance::Unknown) => {
+                    "simulated, never run"
+                }
+                (EffectOutcome::Value, _) => "performed",
+            };
+            let target = match &step.action {
+                Action::Call { target, .. } => target.clone(),
+                other => other.summary(),
+            };
+            order.push(key.clone());
+            found.insert(
+                key,
+                Found {
+                    index: step.index,
+                    target,
+                    status,
+                    recorded_in: t.name.clone(),
+                    shared_by: 1,
+                },
+            );
+        }
+    }
+
+    println!(
+        "{} {} {}",
+        shell("IRREVERSIBLE"),
+        root,
+        dim(&format!("and its branches ({} trajectories)", family.len()))
+    );
+    if found.is_empty() {
+        println!("  {}", ok("no irreversible effect anywhere in this family"));
+        return Ok(ExitCode::SUCCESS);
+    }
+    for key in &order {
+        let f = &found[key];
+        let status = match f.status {
+            "performed" => warn(f.status),
+            "simulated, never run" => dim(f.status),
+            other => other.to_string(),
+        };
+        let shared = if f.shared_by > 1 {
+            dim(&format!("  (shared by {} trajectories)", f.shared_by))
+        } else {
+            String::new()
+        };
+        println!(
+            "  @{:<4} {:<28} {:<22} in {}{}",
+            f.index, f.target, status, f.recorded_in, shared
+        );
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 fn cmd_log(repo: &Repo, trajectory: Option<String>) -> Result<ExitCode> {
