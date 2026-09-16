@@ -19,7 +19,10 @@ alternatives*, and that is what branching needs. So the honest shape of this too
 **What it does not capture** — stated because a replay tool that quietly misses an
 effect produces a trajectory that looks real:
 
-* async clients and streaming responses
+* streaming responses, sync or async — an async *non-streaming* call (`await
+  client.messages.create(...)`) is captured; `client.messages.stream(...)` /
+  `AsyncMessages.create(..., stream=True)` is refused the moment it is attempted,
+  loudly, by name, rather than silently mis-recorded. See `_wrap_async_request`.
 * anything not going through the OpenAI/Anthropic SDKs
 * time, randomness, and the filesystem
 * subprocesses -- a child does not inherit the bootstrap's patch, so nothing it does
@@ -39,7 +42,7 @@ import os
 import sys
 from typing import Any, Callable, Optional
 
-from . import READ, connect
+from . import READ, NoidroidError, connect
 
 __all__ = ["install", "hooked", "guard_subprocess"]
 
@@ -289,6 +292,62 @@ def _wrap_request(client_cls: Any, provider: str) -> None:
     client_cls.request = mediated
 
 
+def _wrap_async_request(client_cls: Any, provider: str) -> None:
+    """The async equivalent of `_wrap_request`.
+
+    Mediation is a blocking request/response over one socket, so the naive version
+    of this — call the synchronous session from a coroutine — would stall the event
+    loop for as long as the real request takes. `Session.acall` (see
+    `noidroid/__init__.py`) is what makes this safe: it moves the socket I/O onto a
+    worker thread and serialises access with an `asyncio.Lock` acquired before
+    anything else happens, so concurrent calls queue in the order asyncio scheduled
+    them rather than in whatever order OS thread scheduling produces — which is the
+    difference between a reproducible step order and one that only happens to match
+    on the run you happened to test.
+
+    `request`'s `stream` keyword is what both SDKs use to ask for a streaming
+    response instead of a deserialised value — it is always passed as a keyword
+    (the parameter is keyword-only in both templates), so checking `kwargs` catches
+    every call site without needing to know which higher-level method it came from.
+    Recording a stream would mean serialising a sequence of chunks over a wire
+    protocol built for one request producing one response; that is real, separate
+    work this module does not do, so a streaming call is refused here, by name, the
+    moment it is attempted — not silently handed to `_dump`, which cannot serialise
+    the SDK's stream object and would fail with a confusing error somewhere else
+    instead of this clear one.
+    """
+    original = client_cls.request
+
+    async def mediated(self, *args, **kwargs):
+        if kwargs.get("stream", False):
+            raise NoidroidError(
+                f"{provider} async streaming is not recorded by --auto: only "
+                f"non-streaming async calls are mediated. Avoid "
+                f"stream()/create(..., stream=True) while recording, or make this "
+                f"particular call through the sync client."
+            )
+        options = kwargs.get("options")
+        if options is None:
+            options = next((a for a in args if hasattr(a, "url")), None)
+        endpoint, body = _describe(options) if options is not None else ("request", {})
+
+        session = _shared_session()
+
+        async def run():
+            return _dump(await original(self, *args, **kwargs))
+
+        payload = await session.acall(
+            f"{provider}.{endpoint}",
+            run,
+            args=body,
+            effect=READ,
+        )
+        return _load(payload)
+
+    mediated.__noidroid_wrapped__ = True  # so a second install is a no-op
+    client_cls.request = mediated
+
+
 def install(providers: Optional[tuple] = None) -> list[str]:
     """Patch whichever supported SDKs are installed. Returns what was hooked.
 
@@ -315,12 +374,18 @@ def install(providers: Optional[tuple] = None) -> list[str]:
             _wrap_request(client_cls, provider)
             _hooked.append(f"{provider}._base_client.SyncAPIClient.request")
 
-        # The async surface is a real hole and is reported as one. Mediation is a
-        # blocking request/response over one socket, so wrapping an async client
-        # would stall the loop it is running on — refusing is honest, half-covering
-        # it is not.
-        if getattr(base, "AsyncAPIClient", None) is not None:
-            _unhooked.append(f"{provider}._base_client.AsyncAPIClient.request")
+        async_cls = getattr(base, "AsyncAPIClient", None)
+        if async_cls is not None and not getattr(
+            async_cls.request, "__noidroid_wrapped__", False
+        ):
+            _wrap_async_request(async_cls, provider)
+            _hooked.append(f"{provider}._base_client.AsyncAPIClient.request")
+        # Streaming — sync or async — is not statically knowable from what is
+        # installed; it depends on whether the program actually calls `.stream()` or
+        # passes `stream=True`. So it is not in this list: refusing every program
+        # that merely imports an SDK capable of streaming would refuse far more than
+        # the programs that use it. The async wrapper refuses it by name, at the
+        # call site, the moment it is attempted instead. See `_wrap_async_request`.
     # Independent of which SDKs are present: a program that shells out is a hole no
     # matter what else it does or does not call.
     guard_subprocess()

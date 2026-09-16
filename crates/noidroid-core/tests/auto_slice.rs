@@ -68,6 +68,124 @@ with open("answer.txt", "w", encoding="utf-8") as handle:
     handle.write(f"{reply.content[0].text}:{type(reply).__name__}")
 "#;
 
+/// The same shape as `AGENT`, but through `AsyncAnthropic`. Still no reference to
+/// noidroid: the claim under test (#33) is that the async client is now wrapped like
+/// the sync one, not merely refused whenever it happens to be importable.
+const ASYNC_AGENT: &str = r#"
+import asyncio
+import os
+import anthropic
+
+async def main():
+    client = anthropic.AsyncAnthropic(
+        api_key="not-a-real-key", base_url=os.environ["FAKE_API"]
+    )
+    reply = await client.messages.create(
+        model="claude-opus-5",
+        max_tokens=16,
+        messages=[{"role": "user", "content": "what is two plus two?"}],
+    )
+    with open("answer.txt", "w", encoding="utf-8") as handle:
+        handle.write(f"{reply.content[0].text}:{type(reply).__name__}")
+
+asyncio.run(main())
+"#;
+
+/// Answers with whatever the request asked, and takes longer for some letters than
+/// others -- on purpose. The claim under test is that the trajectory's step order
+/// follows how `asyncio.gather` scheduled the calls, not how fast each one happened
+/// to come back; a provider that answered every letter equally fast could not tell
+/// the two apart.
+const ECHO_API: &str = r#"
+import json
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+DELAY = {"a": 0.3, "b": 0.05, "c": 0.15}
+
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length") or 0)
+        body = json.loads(self.rfile.read(length) or b"{}")
+        letter = body.get("messages", [{}])[0].get("content", "?")
+        time.sleep(DELAY.get(letter, 0.1))
+        payload = json.dumps({
+            "id": "msg_local", "type": "message", "role": "assistant",
+            "model": "claude-opus-5", "stop_reason": "end_turn", "stop_sequence": None,
+            "content": [{"type": "text", "text": letter}],
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+        }).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+import socket
+socket.getfqdn = lambda *a, **k: "localhost"
+server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+print(server.server_address[1], flush=True)
+server.serve_forever()
+"#;
+
+/// Three concurrent calls, started together and slowest-first, so that if step order
+/// followed completion order instead of dispatch order this would show it: "a" is
+/// the slowest to answer but must still land first in the trajectory.
+const CONCURRENT_ASYNC_AGENT: &str = r#"
+import asyncio
+import os
+import anthropic
+
+client = anthropic.AsyncAnthropic(api_key="not-a-real-key", base_url=os.environ["FAKE_API"])
+
+async def ask(letter):
+    reply = await client.messages.create(
+        model="claude-opus-5",
+        max_tokens=8,
+        messages=[{"role": "user", "content": letter}],
+    )
+    return reply.content[0].text
+
+async def main():
+    a, b, c = await asyncio.gather(ask("a"), ask("b"), ask("c"))
+    with open("answer.txt", "w", encoding="utf-8") as handle:
+        handle.write(f"{a}:{b}:{c}")
+
+asyncio.run(main())
+"#;
+
+/// A program that does one ordinary mediated call, then attempts an async *streaming*
+/// one. Streaming is real, separate work (#33 covers non-streaming async calls only),
+/// so the point under test is that the attempt is refused loudly, by name, the
+/// instant it happens -- not handed to `_dump`, which cannot serialise the SDK's
+/// stream object and would fail somewhere else with a confusing error instead.
+const ASYNC_STREAMING_AGENT: &str = r#"
+import asyncio
+import os
+import anthropic
+import noidroid
+
+nd = noidroid.connect()
+nd.call("setup.ok", lambda: {"ok": True})
+
+async def main():
+    client = anthropic.AsyncAnthropic(
+        api_key="not-a-real-key", base_url=os.environ.get("FAKE_API", "http://127.0.0.1:1")
+    )
+    async with client.messages.stream(
+        model="claude-opus-5",
+        max_tokens=8,
+        messages=[{"role": "user", "content": "count to six"}],
+    ) as stream:
+        async for _ in stream.text_stream:
+            pass
+
+asyncio.run(main())
+# Unreached if the streaming attempt above was refused, as it must be.
+nd.finish("success", {})
+"#;
+
 fn sdk_available() -> bool {
     matches!(
         Command::new("python3")
@@ -200,19 +318,24 @@ fn a_program_with_no_noidroid_code_records_and_replays() {
         env: vec![
             ("PYTHONPATH".into(), pythonpath.clone()),
             ("FAKE_API".into(), endpoint.clone()),
-            // This agent only uses the sync client, and the async surface we cannot
-            // cover would otherwise refuse the recording — which is the point of the
-            // refusal, and why saying so explicitly is the honest way past it.
-            ("NOIDROID_ALLOW_GAPS".into(), "1".into()),
         ],
         auto: true,
         watch: None,
     };
 
+    // No `NOIDROID_ALLOW_GAPS` above, on purpose: importing `anthropic` brings the
+    // async client into the process even though this agent only ever calls the sync
+    // one, and #33 is exactly the claim that that alone must not refuse the
+    // recording -- only actually reaching an uncovered surface should.
     let recorded = engine::run(&repo, &spec(Some("auto-1")), Mode::Record, None)
         .expect("recording an uninstrumented program should work")
         .trajectory
         .expect("a recording produces a trajectory");
+    assert!(
+        !recorded.allow_gaps,
+        "nothing here needed an allowance -- the async client being importable is not \
+         a gap by itself"
+    );
 
     let chain = repo.chain(&recorded).unwrap();
     assert!(
@@ -254,88 +377,254 @@ fn a_program_with_no_noidroid_code_records_and_replays() {
     let _ = fs::remove_dir_all(&dir);
 }
 
+/// The async counterpart of `a_program_with_no_noidroid_code_records_and_replays`
+/// (#33): an uninstrumented program using only `AsyncAnthropic`, recorded and
+/// replayed with no `--allow-gaps` needed, because the async client is now wrapped
+/// rather than refused whenever it happens to be importable.
 #[test]
-fn a_capture_gap_stops_the_recording_unless_it_is_allowed() {
+fn an_uninstrumented_async_program_records_and_replays() {
+    if !sdk_available() {
+        eprintln!("SKIP: automatic capture test needs the anthropic SDK (pip install anthropic)");
+        return;
+    }
+
+    let dir = scratch("auto-async");
+    let api_script = dir.join("fake_api.py");
+    fs::write(&api_script, FAKE_API).unwrap();
+    let agent = dir.join("agent.py");
+    fs::write(&agent, ASYNC_AGENT).unwrap();
+    assert!(
+        !ASYNC_AGENT.contains("import noidroid"),
+        "the agent must not be instrumented, or this test proves nothing"
+    );
+
+    let repo = Repo::open(&dir).unwrap();
+    let pythonpath = format!("{}:{}", bootstrap_path().display(), client_path().display());
+    let api = Api::start(&api_script);
+    let endpoint = api.endpoint();
+    let spec = |name: Option<&str>| RunSpec {
+        command: vec!["python3".into(), agent.display().to_string()],
+        launch_dir: dir.clone(),
+        name: name.map(str::to_string),
+        env: vec![
+            ("PYTHONPATH".into(), pythonpath.clone()),
+            ("FAKE_API".into(), endpoint.clone()),
+        ],
+        auto: true,
+        watch: None,
+    };
+
+    let report = engine::run(&repo, &spec(Some("async-1")), Mode::Record, None)
+        .expect("recording an uninstrumented async program should work");
+    let recorded = report.trajectory.clone().expect("a recording produces a trajectory");
+    assert!(
+        report
+            .last_words
+            .as_deref()
+            .map(|s| !s.contains("refusing to record"))
+            .unwrap_or(true),
+        "an async program that never streams must not be refused: {:?}",
+        report.last_words
+    );
+    assert!(!recorded.allow_gaps, "nothing here needed an allowance");
+
+    let chain = repo.chain(&recorded).unwrap();
+    assert!(
+        chain
+            .iter()
+            .any(|(_, s)| s.action.summary().contains("anthropic")),
+        "the async SDK call should have been captured: {:?}",
+        chain
+            .iter()
+            .map(|(_, s)| s.action.summary())
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        fs::read_to_string(repo.workspace_dir("async-1").join("answer.txt")).unwrap(),
+        "four:Message"
+    );
+
+    // Take the API away. Anything that still works came out of the recording.
+    api.stop();
+
+    let report = engine::run(
+        &repo,
+        &spec(None),
+        Mode::Replay { live: Vec::new() },
+        Some(&recorded),
+    )
+    .expect("replay should run to completion");
+    assert!(
+        report.faithful(),
+        "an uninstrumented async program should replay exactly: {:?}",
+        report.divergences
+    );
+    assert_eq!(
+        report.delivery.get("executed").copied().unwrap_or(0),
+        0,
+        "nothing may be executed during a replay; the API is not even running"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// The risk this design has to answer for: mediation is one exchange at a time over
+/// one connection, so concurrent `asyncio.gather`ed calls are serialised through a
+/// lock rather than genuinely simultaneous. If the queue that serialises them were
+/// ordered by which call happened to finish first, its order would depend on real
+/// provider timing and could come out differently on replay -- when every call
+/// answers instantly instead of after `ECHO_API`'s deliberate delays -- silently
+/// handing a call the wrong recorded response. This agent starts its slowest call
+/// first specifically so that completion order and dispatch order disagree, and
+/// checks that the trajectory -- and a replay of it -- follow the one that has to be
+/// reproducible.
+#[test]
+fn concurrent_async_calls_keep_dispatch_order_not_completion_order() {
+    if !sdk_available() {
+        eprintln!("SKIP: automatic capture test needs the anthropic SDK (pip install anthropic)");
+        return;
+    }
+
+    let dir = scratch("auto-concurrent");
+    let api_script = dir.join("echo_api.py");
+    fs::write(&api_script, ECHO_API).unwrap();
+    let agent = dir.join("agent.py");
+    fs::write(&agent, CONCURRENT_ASYNC_AGENT).unwrap();
+
+    let repo = Repo::open(&dir).unwrap();
+    let pythonpath = format!("{}:{}", bootstrap_path().display(), client_path().display());
+    let api = Api::start(&api_script);
+    let endpoint = api.endpoint();
+    let spec = |name: Option<&str>| RunSpec {
+        command: vec!["python3".into(), agent.display().to_string()],
+        launch_dir: dir.clone(),
+        name: name.map(str::to_string),
+        env: vec![
+            ("PYTHONPATH".into(), pythonpath.clone()),
+            ("FAKE_API".into(), endpoint.clone()),
+        ],
+        auto: true,
+        watch: None,
+    };
+
+    let recorded = engine::run(&repo, &spec(Some("concurrent-1")), Mode::Record, None)
+        .expect("recording concurrent async calls should work")
+        .trajectory
+        .expect("a recording produces a trajectory");
+
+    // Despite "a" being the slowest to actually answer, each call got its own
+    // answer back, not a neighbour's.
+    assert_eq!(
+        fs::read_to_string(repo.workspace_dir("concurrent-1").join("answer.txt")).unwrap(),
+        "a:b:c"
+    );
+
+    // And the trajectory itself recorded them in the order they were dispatched --
+    // gather's argument order -- not the order the (slower) provider answered them.
+    let chain = repo.chain(&recorded).unwrap();
+    let anthropic_steps: Vec<String> = chain
+        .iter()
+        .filter(|(_, s)| s.action.summary().contains("anthropic"))
+        .map(|(_, s)| s.action.summary())
+        .collect();
+    assert_eq!(
+        anthropic_steps.len(),
+        3,
+        "all three calls should be captured: {anthropic_steps:?}"
+    );
+
+    api.stop();
+
+    // Replay answers every call instantly -- no delay at all -- which is exactly the
+    // condition that would expose a queue ordered by completion instead of dispatch:
+    // with every call resolving at the same (zero) speed, only dispatch order is left
+    // to determine the sequence, so an implementation that had been getting the
+    // "right" order by coincidence of timing would be unmasked here.
+    let report = engine::run(
+        &repo,
+        &spec(None),
+        Mode::Replay { live: Vec::new() },
+        Some(&recorded),
+    )
+    .expect("replay should run to completion");
+    assert!(
+        report.faithful(),
+        "replaying concurrent async calls must reproduce the same pairing: {:?}",
+        report.divergences
+    );
+    assert_eq!(
+        fs::read_to_string(repo.workspace_dir("concurrent-1").join("answer.txt")).unwrap(),
+        "a:b:c",
+        "replay must hand each call back its own recorded answer, not a neighbour's"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// Streaming is not covered by #33 -- only non-streaming async calls are. The claim
+/// under test is that an attempt to stream is refused loudly and specifically, at the
+/// moment it happens, rather than silently mis-recorded (the SDK's stream object is
+/// not JSON-serialisable, so the alternative to refusing here is not "it works", it
+/// is a confusing failure somewhere downstream instead of a clear one at the source).
+#[test]
+fn an_async_streaming_call_is_refused_by_name_not_silently_recorded() {
     if !sdk_available() {
         eprintln!("SKIP: needs the anthropic SDK (pip install anthropic)");
         return;
     }
 
-    let dir = std::env::temp_dir().join(format!(
-        "noidroid-gaps-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    fs::create_dir_all(&dir).unwrap();
-    // Importing the SDK brings an async client into the process. We patch only the
-    // sync surface, so this program has a hole we cannot cover.
+    let dir = scratch("auto-async-stream");
     let agent = dir.join("agent.py");
-    fs::write(
-        &agent,
-        "import anthropic\nimport noidroid\nnd = noidroid.connect()\n\
-         nd.call('work.do', lambda: {'ok': True})\nnd.finish('success', {})\n",
-    )
-    .unwrap();
+    fs::write(&agent, ASYNC_STREAMING_AGENT).unwrap();
 
     let repo = Repo::open(&dir).unwrap();
     let pythonpath = format!("{}:{}", bootstrap_path().display(), client_path().display());
-    let spec = |name: &str, allow: bool| {
-        let mut env = vec![("PYTHONPATH".to_string(), pythonpath.clone())];
-        if allow {
-            env.push(("NOIDROID_ALLOW_GAPS".to_string(), "1".to_string()));
-        }
-        RunSpec {
-            command: vec!["python3".into(), agent.display().to_string()],
-            launch_dir: dir.clone(),
-            name: Some(name.to_string()),
-            env,
-            auto: true,
-            watch: None,
-        }
+    let spec = RunSpec {
+        command: vec!["python3".into(), agent.display().to_string()],
+        launch_dir: dir.clone(),
+        name: Some("streamed".into()),
+        env: vec![("PYTHONPATH".into(), pythonpath)],
+        auto: true,
+        watch: None,
     };
 
-    // Fail closed. A recording that quietly missed a surface still looks real and
-    // still claims to replay faithfully, which is the failure this cannot survive.
-    let refused = engine::run(&repo, &spec("blocked", false), Mode::Record, None);
-    match refused {
-        Err(e) => {
-            let said = e.to_string();
-            assert!(
-                said.contains("AsyncAPIClient") && said.contains("--allow-gaps"),
-                "the refusal must name the surface and the way past it, got: {said}"
-            );
-        }
-        Ok(_) => panic!("recording should have been refused while a surface is unhooked"),
-    }
+    let report = engine::run(&repo, &spec, Mode::Record, None)
+        .expect("the engine completes even though the program's streaming attempt failed");
+    assert_ne!(
+        report.exit_code,
+        Some(0),
+        "a program whose streaming attempt was refused did not finish normally"
+    );
+    let said = report
+        .last_words
+        .as_deref()
+        .expect("the refusal should be visible in what the program said on its way out");
     assert!(
-        repo.load_trajectory("blocked").is_err(),
-        "a refused recording leaves nothing behind"
+        said.contains("streaming") && said.contains("not recorded"),
+        "the refusal must name what it refused, got: {said}"
     );
 
-    // Escapable on purpose, and the allowance is remembered so replaying it does not
-    // refuse in turn.
-    let allowed = engine::run(&repo, &spec("gapped", true), Mode::Record, None)
-        .expect("--allow-gaps should record")
-        .trajectory
-        .expect("a recording produces a trajectory");
-    assert!(
-        allowed.allow_gaps,
-        "the allowance is part of what was recorded"
+    // Whatever was recorded before the streaming attempt (the ordinary `nd.call`) is
+    // still worth keeping; `nd.finish` is never reached, so the run stays `aborted`
+    // rather than claiming a success that never happened.
+    let trajectory = repo
+        .load_trajectory("streamed")
+        .expect("what was recorded before the refusal is still worth keeping");
+    assert_eq!(
+        trajectory.outcome.status, "aborted",
+        "the program died before finishing"
     );
-
-    let mut replay = spec("unused", true);
-    replay.name = None;
-    let report = engine::run(
-        &repo,
-        &replay,
-        Mode::Replay { live: Vec::new() },
-        Some(&allowed),
-    )
-    .expect("replay should run to completion");
-    assert!(report.faithful(), "{:?}", report.divergences);
+    let chain = repo.chain(&trajectory).unwrap();
+    assert!(
+        chain
+            .iter()
+            .all(|(_, s)| !s.action.summary().contains("anthropic")),
+        "no fragment of the refused streaming call may appear in the trajectory: {:?}",
+        chain
+            .iter()
+            .map(|(_, s)| s.action.summary())
+            .collect::<Vec<_>>()
+    );
 
     let _ = fs::remove_dir_all(&dir);
 }
@@ -378,29 +667,22 @@ fn scratch(tag: &str) -> PathBuf {
 /// fence never patched its socket module, and no step records what it touched. The
 /// one thing that must not happen is passing silently.
 ///
-/// Unlike the async-client hole, this cannot be caught before the program runs --
+/// Unlike an unhooked SDK surface, this cannot be caught before the program runs --
 /// nothing is known about it until the moment it happens -- so by the time it is
 /// detected, steps before it may already be recorded. The engine's answer to a child
 /// that dies mid-run is not to erase what already happened: it keeps the steps taken,
 /// marks the run `aborted` with the exit code, and the refusal is what the program's
 /// own last words say. This is the same handling `record` gives any program that dies
 /// unexpectedly, exercised here for a death this project causes on purpose.
+///
+/// This used to skip in any environment with `anthropic` installed: `install()`
+/// patches every SDK it finds, whether or not the program under test imports it, and
+/// before #33 the async client being merely importable refused the recording outright
+/// -- masking the subprocess refusal this test is actually about. Now that the async
+/// client is wrapped rather than refused on sight, there is nothing left to confound
+/// this test with, so it runs unconditionally.
 #[test]
 fn a_program_that_shells_out_is_refused_rather_than_half_recorded() {
-    if sdk_available() {
-        // Inverted relative to this file's other gate: `install()` patches every
-        // SDK it finds installed, whether or not the program under test imports it,
-        // so an environment with anthropic present always hits the async-client
-        // hole (#33) before the shelling agent's own `import subprocess` line ever
-        // runs, and refuses for that unrelated reason first. Isolating the claim
-        // this test makes needs an environment with no SDK gap to confound it.
-        eprintln!(
-            "SKIP: needs an environment with no capturable SDK installed, so #33's \
-             async-client refusal does not mask the one under test here"
-        );
-        return;
-    }
-
     let dir = scratch("spawn-refused");
     let agent = shelling_agent(&dir);
     let repo = Repo::open(&dir).unwrap();
