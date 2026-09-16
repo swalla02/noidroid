@@ -9,6 +9,11 @@ how the package version relates to `STEP_VERSION`, the on-disk object format.
 
 ### Added
 
+- **What a branch costs, measured.** `examples/branch_depth_bench.rs` times branching at
+  depth k on the reference reactor and on real Chromium. It is a fixed ~160 ms (mostly
+  starting Python) plus about 0.6 ms per re-derived step, linear. That is above
+  AgentENV's sub-50 ms resume at every depth and below BPO's 1,920 ms snapshot until
+  roughly k≈3,000. Numbers and caveats in `docs/branch-cost.md`. (#63)
 - **`--auto` captures async SDK clients.** `await client.messages.create(...)` on
   `AsyncAnthropic` or `AsyncOpenAI` now records and replays like the sync call. An agent
   that merely imported an async client used to be refused outright. Socket I/O with the
