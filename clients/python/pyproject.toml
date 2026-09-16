@@ -1,6 +1,6 @@
 [project]
 name = "noidroid"
-version = "0.3.0"
+version = "0.4.0"
 description = "Python client for the Paranoid Android trajectory engine."
 readme = "README.md"
 requires-python = ">=3.9"

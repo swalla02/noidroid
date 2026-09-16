@@ -7,6 +7,16 @@ how the package version relates to `STEP_VERSION`, the on-disk object format.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-16
+
+The first published release since 0.1.0. The 0.2.0 and 0.3.0 tags exist but never
+produced artifacts. 0.2.0's release gate timed out. 0.3.0's failed on browser tests that
+were genuinely broken, and CI had reported green because `cargo test | tee` ran without
+`pipefail` (#109). Everything listed under 0.2.0 and 0.3.0 ships for the first time
+here.
+
+`STEP_VERSION` is still 1. Recordings from any earlier version replay unchanged.
+
 ### Added
 
 - **What a branch costs, measured.** `examples/branch_depth_bench.rs` times branching at
@@ -727,7 +737,8 @@ only the sandboxed workspace is captured, the ambient environment is not capture
 branch is not a prediction, browser reconstruction is bounded by the recorded page
 set, and no scale work.
 
-[Unreleased]: https://github.com/swalla02/noidroid/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/swalla02/noidroid/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/swalla02/noidroid/releases/tag/v0.4.0
 [0.3.0]: https://github.com/swalla02/noidroid/releases/tag/v0.3.0
 [0.2.0]: https://github.com/swalla02/noidroid/releases/tag/v0.2.0
 [0.1.0]: https://github.com/swalla02/noidroid/releases/tag/v0.1.0
