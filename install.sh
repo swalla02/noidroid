@@ -50,9 +50,12 @@ latest_tag() {
   # The API answers without a token at 60 requests/hour per IP, which is plenty
   # for installing. `grep -m1` reads the first tag_name rather than adding a jq
   # dependency to a script whose whole point is having no dependencies.
-  curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" \
-    | grep -m1 '"tag_name"' \
-    | cut -d'"' -f4
+  #
+  # Read in full before matching. Piped straight into `grep -m1`, curl is still
+  # writing when grep exits at the first match, and it prints "Failure writing
+  # output" on every successful install.
+  release=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest") || return 1
+  printf '%s\n' "$release" | grep -m1 '"tag_name"' | cut -d'"' -f4
 }
 
 # Hash $1 with whichever tool this machine has: sha256sum on Linux, shasum on
