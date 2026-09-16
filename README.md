@@ -622,21 +622,28 @@ value was a *choice among alternatives*, and that is what an intervention needs 
 pick = nd.decide("route", options=candidates, choice=candidates[0])
 ```
 
-It also does not capture async clients, streaming responses, non-SDK HTTP, the clock,
-randomness, or what a child process does — and it will not quietly record around
-them. `--auto` prints what it hooked *and* what it could not, and **refuses to
+Async clients are captured: `await client.messages.create(...)` records and replays
+like the sync call. Concurrent async calls are serialised while recording, so step order
+is the order they were dispatched, not the order they finished. That is what keeps a
+replay reproducible, and it means an `asyncio.gather` of provider calls runs one at a
+time while it is recorded. It does not capture streaming responses, non-SDK HTTP, the
+clock, randomness, or what a child process does, and it will not quietly record
+around them. A streaming call is refused by name the moment it is attempted. `--auto` prints what it hooked *and* what it could not, and **refuses to
 record** when it finds a surface it cannot cover. A subprocess is caught the moment
 the program actually spawns one — `subprocess.run`, `.call`, `Popen` directly, all of
 it — not merely a library that happens to import the module for its own reasons:
 
 ```console
 $ noidroid run --auto -- python3 agent.py
-[noidroid.auto] hooked: anthropic._base_client.SyncAPIClient.request
-[noidroid.auto] NOT hooked: anthropic._base_client.AsyncAPIClient.request — calls
-                through it are not recorded
-[noidroid.auto] refusing to record: the surfaces above are not captured, so this
-                recording would be incomplete without saying so.
-  Record it anyway with --allow-gaps if you know your program does not use them.
+[noidroid.auto] hooked: anthropic._base_client.SyncAPIClient.request,
+                anthropic._base_client.AsyncAPIClient.request
+[noidroid.auto] NOT hooked: subprocess — a child process does not inherit the
+                bootstrap, so nothing it does is mediated, fenced, or reported
+[noidroid.auto] refusing to record: the program is about to spawn a child process,
+                which is not captured, so this recording would be incomplete without
+                saying so.
+  Record it anyway with --allow-gaps if you know the rest of the program does not
+  depend on what the child does.
 ```
 
 And during a replay the network is fenced: an outbound socket to anything but
@@ -668,8 +675,8 @@ DOCTOR  what a recording made now would and would not cover
       · limit       Windows is excluded: the socket is hardcoded (#32)
 
   CAPTURE SURFACES
-    anthropic     blocked         0.122.0 is installed, and 1 request surface present here is not hooked
-      · NOT hooked  anthropic._base_client.AsyncAPIClient.request (#33)
+    anthropic     ok              0.122.0 is installed, and every request surface found is hooked
+      · hooked      anthropic._base_client.AsyncAPIClient.request
       · hooked      anthropic._base_client.SyncAPIClient.request
 
   THE PROGRAM

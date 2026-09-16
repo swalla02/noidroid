@@ -9,6 +9,17 @@ how the package version relates to `STEP_VERSION`, the on-disk object format.
 
 ### Added
 
+- **`--auto` captures async SDK clients.** `await client.messages.create(...)` on
+  `AsyncAnthropic` or `AsyncOpenAI` now records and replays like the sync call. An agent
+  that merely imported an async client used to be refused outright. Socket I/O with the
+  engine moves to a worker thread, so a call in flight never stalls the event loop, and
+  concurrent calls queue on an `asyncio.Lock` in the order asyncio dispatched them. Step
+  order is therefore identical on every run, independent of which response came back
+  first. The cost is stated rather than hidden: an `asyncio.gather` of provider calls is
+  serialised while it is recorded. Streaming, sync or async, is still not captured. An
+  async streaming call is refused by name at the call site, not handed to a serialiser
+  that fails somewhere else. Programs written by hand get the same thing as
+  `Session.acall`. (#33)
 - **An OpenEnv adapter — `state()` becomes a declared, witnessed world.** OpenEnv
   (github.com/meta-pytorch/OpenEnv) standardises RL and agentic environments on three
   methods: `reset()`, `step(action)`, `state()`. `noidroid.openenv.OpenEnvAdapter`
