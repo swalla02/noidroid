@@ -355,6 +355,17 @@ how the package version relates to `STEP_VERSION`, the on-disk object format.
   silent egress the fence exists to catch. Without this, `--live` would have been
   fenced out of the one call it exists to make, and CI would not have noticed:
   its stand-in is on loopback, which was allowed all along. (#46)
+- **What a fingerprint comparison is worth, settled.** Run grip and trajectory grip
+  are named apart (`docs/environment-model.md` §14). A replay of a trajectory with a
+  declared world now says, beside "faithful", that the world was served from the
+  recording and not re-driven: the replay verified the program, not the world. The
+  trajectory's own evidence is untouched, and run grip is never printed as a bare word.
+  §14 also states the floor: the engine can tell whether a program said anything new
+  about its world, never whether it was true. The browser adapter gets the same proof
+  the reference environment has for its re-drive. `NOIDROID_BROWSER_MUTE=1` skips
+  `Browser._reconstruct`, and `the_counterfactual_browser_is_re_driven_rather_than_assumed`
+  shows a muted branch reads `about:blank` where the re-driven one reproduces the
+  recorded page exactly. (#53)
 
 ## [0.3.0] - 2026-08-19
 

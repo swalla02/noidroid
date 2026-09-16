@@ -751,6 +751,24 @@ fn cmd_replay(
             "\n  {} the reconstruction addresses the same objects as the recording",
             ok("faithful:")
         );
+        // A replay executes nothing, so every observation of a declared world was
+        // served from the recording and its part of that match holds by construction.
+        // The sentence above is true about the program; left alone it reads as true
+        // about the world as well (#53).
+        let unmeasured: Vec<&str> = t
+            .worlds
+            .iter()
+            .filter(|w| !w.grip.is_captured())
+            .map(|w| w.name.as_str())
+            .collect();
+        if !unmeasured.is_empty() && !report.delivery.contains_key("executed") {
+            println!(
+                "  {} {} was served from the recording, not re-driven: this replay \
+                 verified the program, not the world",
+                dim("note:"),
+                unmeasured.join(", ")
+            );
+        }
         Ok(ExitCode::SUCCESS)
     } else {
         println!("\n  {}", warn("divergences:"));
