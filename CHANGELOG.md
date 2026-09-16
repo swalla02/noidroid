@@ -225,6 +225,14 @@ how the package version relates to `STEP_VERSION`, the on-disk object format.
 
 ### Fixed
 
+- **A proxied stream's end raced its own recording.** Since streams are passed through
+  as they arrive, an agent could see the end of a response before the proxy committed
+  its step. A file the agent wrote next landed in whichever step won, which made a
+  faithful replay report a `state_mismatch` now and then. If the agent exited straight
+  away, the step was never recorded at all. The last chunk and the terminator are now
+  held until the step is committed, which costs one chunk of latency. A test-only delay
+  makes the ordering deterministic, so the test fails every time without the fix, where
+  the race had shown up only as an occasional CI failure. (#122)
 - **A sync streaming call under `--auto` crashed with an unrelated error instead of
   being refused.** `client.messages.stream()` handed the SDK's `Stream` object to a
   serialiser that could not take it, and what surfaced was an `AttributeError` from

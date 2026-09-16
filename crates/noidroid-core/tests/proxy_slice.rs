@@ -832,6 +832,10 @@ fn a_streamed_response_reaches_the_client_before_it_ends() {
         env: vec![
             ("PYTHONPATH".into(), client_path().display().to_string()),
             ("ARRIVALS_PATH".into(), timings.display().to_string()),
+            // Widen the window between the stream ending and the step being
+            // committed, so the race #122 describes loses the same way every time
+            // instead of now and then on a loaded CI runner.
+            ("NOIDROID_PROXY_COMMIT_DELAY".into(), "0.5".into()),
         ],
         auto: false,
         watch: None,
@@ -870,6 +874,20 @@ fn a_streamed_response_reaches_the_client_before_it_ends() {
         .find(|(_, s)| s.action.summary().contains("http.v1.messages"))
         .and_then(|(_, s)| s.effects.first())
         .expect("the streamed call should be in the trajectory");
+    // #122: the agent writes answer.txt the moment the stream ends. If it can see the
+    // end before the step is committed, whether that write lands in this step's state
+    // is decided by which process wins, and a replay that serves the body instantly
+    // wins differently. The proxy holds the end back until the step exists, so the
+    // write always belongs to the step after.
+    let (_, streamed_step) = chain
+        .iter()
+        .find(|(_, s)| s.action.summary().contains("http.v1.messages"))
+        .unwrap();
+    let state = noidroid_core::tree::read(&streamed_step.state_root, &repo.store).unwrap();
+    assert!(
+        state.entries.iter().all(|e| e.path != "answer.txt"),
+        "the stream's end reached the agent before its step was committed"
+    );
     let value: serde_json::Value = repo.store.get_json(&effect.value).unwrap();
     let body = value["body"].as_str().expect("a recorded response body");
     for marker in ["message_start", "message_stop", "one ", "six"] {
