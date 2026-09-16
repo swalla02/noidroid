@@ -353,25 +353,31 @@ SWEEP run-1 (ended success)
   @1 call world.read × timeout      aborted  ← flips it
   @1 call world.read × server-error aborted  ← flips it
   @1 call world.read × rate-limited aborted  ← flips it
-  @1 call world.read × malformed    success  ← absorbed: the verdict never noticed
-  @1 call world.read × empty        success  ← absorbed: the verdict never noticed
+  @1 call world.read × malformed    success  ← absorbed: succeeded on an answer that was not one
+  @1 call world.read × empty        success  ← absorbed: succeeded on an answer that was not one
   @1 call world.read × unauthorized aborted  ← flips it
 
-  2 absorbed — the verdict stayed success as if the call had never failed:
+  2 absorbed — the run still succeeded when a call answered with nothing usable:
     @1 world.read × malformed    still success
       noidroid diff run-1 run-1~1~malformed
     @1 world.read × empty        still success
       noidroid diff run-1 run-1~1~empty
-  that is a validation gap, not resilience — nothing downstream checked the result
+  either the agent handled that answer or it never looked at it — the diff shows which
 ```
 
-Here the reading inverts from `bisect`. A flip is the boring outcome: of course an
-uncaught timeout aborts the run. An **absorbed** probe is the finding — the verdict
-came out exactly as recorded even though the call answered `malformed` or `empty`,
-which means nothing downstream ever looked at what came back. `sweep` runs every
-probe rather than stopping at the first flip, because the absorbed result is often not
-the first one, and exits non-zero when it finds at least one — the same signal a CI
-robustness check would want.
+Here the reading inverts from `bisect`, and what it means depends on the kind of
+failure. A flip is the ordinary outcome: an uncaught timeout aborts the run. A
+**raised** failure (timeout, 500, 429, 401) that the run catches and still succeeds
+through is reported as **survived**. That is handling, and it never fails the sweep.
+An **absorbed** probe is the finding: `empty` and `malformed` raise nothing, and the run
+succeeded anyway on an answer that was not one. Either the agent handled that answer or
+it never looked at it, and `noidroid diff` shows which.
+
+A run that did not succeed cannot show absorption. A failure that leaves a failing run
+failing proves nothing about the call, and `sweep` says so instead of reporting it.
+Every probe runs rather than stopping at the first flip, and probes left by an earlier
+sweep are read back rather than dropped. The exit code is non-zero only when something
+was absorbed, so an agent is never failed in CI for handling its errors.
 
 ---
 

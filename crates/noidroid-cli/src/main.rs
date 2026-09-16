@@ -1203,12 +1203,18 @@ fn cmd_bisect(
 /// `bisect` explains an outcome that already happened: a decision was made, and it
 /// asks whether a different one would have changed the verdict. Nothing here happened
 /// — these are calls that answered normally, made to fail after the fact — so the
-/// reading inverts. A call that flips the verdict when it is made to fail is the
-/// unsurprising result: of course an uncaught timeout aborts the run. A call that does
-/// *not* flip it — especially `empty` or `malformed`, the two that raise nothing — is
-/// the finding this command exists to produce: nothing downstream ever looked at what
-/// came back before trusting it. That gets its own word, `absorbed`, rather than
-/// bisect's "no flip found", because here it is the good half of the report.
+/// reading inverts, and it depends on the kind of failure:
+///
+/// * a **raised** failure (timeout, 500, 429, 401) that leaves a success standing was
+///   *survived* — caught, retried, or routed around. That is handling, not a gap.
+/// * a **value** failure (`empty`, `malformed`) raises nothing. A success that stands
+///   on one is *absorbed*, and it is the finding this command exists for: either the
+///   agent handled that answer or it never looked at it, and only the diff says which.
+/// * a run that did **not** succeed cannot show either. A failure injected into a
+///   failing run that leaves it failing proves nothing about the call.
+///
+/// The words matter because the exit code rides on them: only an absorbed value
+/// failure exits non-zero, so a well-built agent is never failed for its retries.
 fn cmd_sweep(repo: &Repo, cwd: &Path, name: &str, simulate: Vec<String>) -> Result<ExitCode> {
     let parent = repo.load_trajectory(name)?;
     let chain = repo.chain(&parent)?;
@@ -1262,57 +1268,52 @@ fn cmd_sweep(repo: &Repo, cwd: &Path, name: &str, simulate: Vec<String>) -> Resu
     // Every probe is run, not just enough to find one: the interesting result is
     // often not the first one, and stopping early would silently discard exactly what
     // this command exists to surface.
+    let succeeded = original == "success";
+    if !succeeded {
+        println!(
+            "  {}",
+            warn(&format!(
+                "this run ended {original}, so a failure that leaves it {original} proves \
+                 nothing about the call; only flips can be read"
+            ))
+        );
+        println!();
+    }
+
     let mut absorbed: Vec<(u64, String, Failure, String, String)> = Vec::new();
+    let mut survived = 0usize;
     for (at, target, failure) in probes {
         let label = format!("{name}~{at}~{}", failure.label());
-        if repo.has_trajectory(&label) {
-            continue;
-        }
-        let spec = RunSpec {
-            command: parent.command.clone(),
-            launch_dir: cwd.to_path_buf(),
-            name: Some(label.clone()),
-            env: if parent.auto {
-                auto_capture_env()?
-            } else {
-                Vec::new()
-            },
-            auto: parent.auto,
-            watch: None,
-        };
-        let attempt = engine::run(
-            repo,
-            &spec,
-            Mode::Branch {
-                at,
-                intervention: failure.as_intervention(),
-                simulate: simulated.clone(),
-            },
-            Some(&parent),
-        );
-
-        // A probe that could not be re-entered establishes nothing. Unlike `bisect`,
-        // `aborted` is not treated that way here — it is an ordinary, expected verdict
-        // for this sweep: a program that never catches the exception a raised failure
-        // produces is supposed to abort, and that is a flip like any other.
-        let outcome = match &attempt {
-            Err(Error::Refused(_)) => "unreachable".to_string(),
-            Err(e) => return Err(Error::Protocol(format!("probing {name}@{at}: {e}"))),
-            Ok(report) => match &report.trajectory {
-                Some(branch) => branch.outcome.status.clone(),
-                None => "unreachable".to_string(),
-            },
+        // A probe from an earlier sweep is still an answer. Skipping it silently would
+        // drop its row from this report -- and could exit 0 with a finding hidden.
+        let outcome = if repo.has_trajectory(&label) {
+            repo.load_trajectory(&label)?.outcome.status
+        } else {
+            probe(repo, cwd, &parent, name, at, failure, &simulated, &label)?
         };
         let established = outcome != "unreachable";
         let flips = established && outcome != original;
+        // `empty` and `malformed` come back as values; every other kind raises.
+        let silent = matches!(
+            failure.as_intervention(),
+            Intervention::ReplaceResult { .. }
+        );
 
-        let annotation = if flips {
-            format!("  {}", ok("\u{2190} flips it"))
-        } else if established {
-            absorbed.push((at, target.clone(), failure, outcome.clone(), label.clone()));
-            format!("  {}", warn("\u{2190} absorbed: the verdict never noticed"))
-        } else {
+        let annotation = if !established {
             format!("  {}", warn("\u{2190} unknown, nothing was established"))
+        } else if flips {
+            format!("  {}", dim("\u{2190} flips it"))
+        } else if !succeeded {
+            format!("  {}", dim("\u{2190} no change (it was already failing)"))
+        } else if silent {
+            absorbed.push((at, target.clone(), failure, outcome.clone(), label.clone()));
+            format!(
+                "  {}",
+                warn("\u{2190} absorbed: succeeded on an answer that was not one")
+            )
+        } else {
+            survived += 1;
+            format!("  {}", ok("\u{2190} survived"))
         };
         println!(
             "  @{at} call {} {} {:<12} {}{}",
@@ -1325,17 +1326,27 @@ fn cmd_sweep(repo: &Repo, cwd: &Path, name: &str, simulate: Vec<String>) -> Resu
     }
 
     println!();
-    if absorbed.is_empty() {
+    if survived > 0 {
         println!(
             "  {}",
-            ok("no call was absorbed \u{2014} every reachable failure changed the verdict")
+            ok(&format!(
+                "{survived} raised failure(s) survived \u{2014} the run caught them and still succeeded"
+            ))
         );
+    }
+    if absorbed.is_empty() {
+        if succeeded {
+            println!(
+                "  {}",
+                ok("no call was absorbed \u{2014} no empty or malformed answer went unnoticed")
+            );
+        }
         return Ok(ExitCode::SUCCESS);
     }
     println!(
         "  {}",
         warn(&format!(
-            "{} absorbed \u{2014} the verdict stayed {original} as if the call had never failed:",
+            "{} absorbed \u{2014} the run still succeeded when a call answered with nothing usable:",
             absorbed.len()
         ))
     );
@@ -1348,9 +1359,57 @@ fn cmd_sweep(repo: &Repo, cwd: &Path, name: &str, simulate: Vec<String>) -> Resu
     }
     println!(
         "  {}",
-        dim("that is a validation gap, not resilience \u{2014} nothing downstream checked the result")
+        dim("either the agent handled that answer or it never looked at it \u{2014} the diff shows which")
     );
     Ok(ExitCode::from(1))
+}
+
+/// Run one sweep probe and return the outcome it reached, or `unreachable`.
+#[allow(clippy::too_many_arguments)]
+fn probe(
+    repo: &Repo,
+    cwd: &Path,
+    parent: &Trajectory,
+    name: &str,
+    at: u64,
+    failure: Failure,
+    simulated: &BTreeMap<String, Value>,
+    label: &str,
+) -> Result<String> {
+    let spec = RunSpec {
+        command: parent.command.clone(),
+        launch_dir: cwd.to_path_buf(),
+        name: Some(label.to_string()),
+        env: if parent.auto {
+            auto_capture_env()?
+        } else {
+            Vec::new()
+        },
+        auto: parent.auto,
+        watch: None,
+    };
+    let attempt = engine::run(
+        repo,
+        &spec,
+        Mode::Branch {
+            at,
+            intervention: failure.as_intervention(),
+            simulate: simulated.clone(),
+        },
+        Some(parent),
+    );
+
+    // A probe that could not be re-entered establishes nothing. Unlike `bisect`,
+    // `aborted` is an ordinary verdict here: a program that never catches the
+    // exception a raised failure produces is supposed to abort.
+    Ok(match &attempt {
+        Err(Error::Refused(_)) => "unreachable".to_string(),
+        Err(e) => return Err(Error::Protocol(format!("probing {name}@{at}: {e}"))),
+        Ok(report) => match &report.trajectory {
+            Some(branch) => branch.outcome.status.clone(),
+            None => "unreachable".to_string(),
+        },
+    })
 }
 
 /// A filesystem- and eye-friendly name for a chosen value.
