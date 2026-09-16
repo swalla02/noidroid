@@ -121,6 +121,28 @@ finally:
     browser.close()
 "##;
 
+/// An agent that reads the page immediately after a decision, without navigating
+/// first. The decision itself does not matter -- either option runs the same code
+/// next. What matters is that `read()` depends entirely on whatever the browser is
+/// showing at that moment, and a fresh browser that never reconstructed the recorded
+/// page is showing `about:blank`, not the page the recording left behind.
+const STABLE_AGENT: &str = r##"
+import os
+import noidroid
+from noidroid.browser import Browser
+
+nd = noidroid.connect()
+browser = Browser(nd)
+site = os.environ["FLIGHT_SITE"]
+try:
+    browser.goto(site + "/", wait_for="#rows tr")
+    choice = browser.decide("pick", options=["a", "b"], choice="a")
+    seen = browser.read()
+    nd.finish("done", {"chose": choice, "url": seen["url"], "digest": seen["digest"]})
+finally:
+    browser.close()
+"##;
+
 struct Site {
     child: Child,
     port: u16,
@@ -512,4 +534,91 @@ fn a_page_that_cannot_be_reproduced_makes_everything_after_it_unknown() {
     );
 
     site.stop();
+}
+
+#[test]
+fn the_counterfactual_browser_is_re_driven_rather_than_assumed() {
+    // The claim: a branch's fresh browser is genuinely on the recorded page when the
+    // counterfactual begins, not sitting on `about:blank` because the replayed
+    // prefix never touched it. `_reconstruct` is the fifteen lines in browser.py
+    // that make this true. If it were skipped, the first action past the divergence
+    // would read whatever a blank page says instead of the recorded one -- and the
+    // run would still complete, still hash consistently, and still declare the world
+    // `witnessed`, silently describing a browser that was never actually there.
+    // `NOIDROID_BROWSER_MUTE` exists so this comparison is measured, not asserted:
+    // issue #53 question 5, mirroring what `REFERENCE_MUTE` does for the reference
+    // environment's `_catch_up`.
+    let _serial = one_at_a_time();
+    if !browser_available() {
+        return;
+    }
+
+    let site = Site::start(&repo_root());
+    let f = Fixture::new(site.port);
+    let agent = f.dir.join("stable_agent.py");
+    fs::write(&agent, STABLE_AGENT).unwrap();
+
+    let recorded = engine::run(
+        &f.repo,
+        &f.spec_for(&agent, "web-1", true),
+        Mode::Record,
+        None,
+    )
+    .expect("recording should succeed")
+    .trajectory
+    .expect("a recording produces a trajectory");
+    assert_eq!(recorded.outcome.result["chose"], "a");
+    let recorded_digest = recorded.outcome.result["digest"].clone();
+
+    let at = f.decision_step(&recorded);
+
+    // Take the site away. Anything that still works from here is reconstruction, not
+    // a second visit to the website.
+    site.stop();
+
+    let branch_at = |name: &str, mute: bool| -> Trajectory {
+        let mut spec = f.spec_for(&agent, name, false);
+        if mute {
+            spec.env.push(("NOIDROID_BROWSER_MUTE".into(), "1".into()));
+        }
+        engine::run(
+            &f.repo,
+            &spec,
+            Mode::Branch {
+                at,
+                intervention: Intervention::ReplaceDecision {
+                    name: "pick".into(),
+                    value: serde_json::json!("b"),
+                },
+                simulate: BTreeMap::new(),
+            },
+            Some(&recorded),
+        )
+        .expect("the branch should run to completion")
+        .trajectory
+        .expect("the branch should produce a trajectory")
+    };
+
+    // Re-driven: the fresh browser is put back on the recorded page before `read()`
+    // ever runs, so it reads the same thing the recording did.
+    let redriven = branch_at("web-redriven", false);
+    assert_eq!(
+        redriven.outcome.result["digest"], recorded_digest,
+        "re-driving the prefix into a fresh browser must reproduce the recorded page \
+         before the branch reads it"
+    );
+
+    // Muted: the fresh browser skips the re-drive and `read()` runs against
+    // `about:blank`. This is the run that would look identical to the one above if
+    // the re-drive were decorative -- it is not, and the report has to show that.
+    let muted = branch_at("web-muted", true);
+    assert_eq!(
+        muted.outcome.result["url"], "about:blank",
+        "with the re-drive skipped, the branch never actually reaches the recorded page"
+    );
+    assert_ne!(
+        muted.outcome.result["digest"], recorded_digest,
+        "a run that skipped the re-drive must not read back the recorded digest \
+         anyway -- if it did, the re-drive was never doing anything"
+    );
 }

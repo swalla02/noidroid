@@ -521,6 +521,125 @@ serialising, and `Trajectory.worlds` is omitted when empty, so:
 
 Existing trajectories replay, branch, export and import unchanged. No migration.
 
+## 14. What a fingerprint comparison is worth
+
+Comparing two fingerprints is evidence when the two came from different places — the
+program's testimony this run versus the recording's. It is theatre when one side was
+copied from the other. §7.1 states the mechanism; this section states what the
+comparison is allowed to claim, settled by #53 on top of #52's implementation.
+
+### 14.1 Run grip and trajectory grip are two numbers, not one
+
+**Trajectory grip** is `Manifest.grip`, `Step.grip`, `Checkpoint.evidence`: a property
+of the *recording*, fixed when a step is committed. `noidroid show <ref>@k` and the
+`world` line of `noidroid log` print it, and it does not change without a new recording.
+
+**Run grip** is `Report.grip`: a property of *this invocation*, on the unhashed side
+with delivery. It joins the grip each executed step actually earned
+(`Situation::achieved`), which is `opaque` for any world whose observation the engine
+supplied rather than the program.
+
+The CLI never prints run grip as a bare word. That is deliberate: printed beside the
+trajectory grip it would be two numbers with one vocabulary, and a reader would conflate
+them in both directions. What a run failed to establish is said in a sentence instead —
+§14.2.
+
+### 14.2 What a replay and a branch may claim about a declared world
+
+**A branch** acts. Past the divergence point the program executes, and an adapter that
+re-drove and re-observed its world earns `witnessed`. One that stayed silent is handed
+the recorded fingerprint, earns `opaque`, and the census names the world:
+
+```
+  world not re-driven    reactor (served from the recording; nothing was checked)
+```
+
+**A pure replay** acts on nothing. Every observation is served, so for a declared world
+the state comparison matches by construction. Degrading every replay to `opaque` would
+say nothing about any adapter — they are all served by design — so the gate is on
+executed steps, and the trajectory's own evidence is untouched. But "faithful" alone is
+read as covering the world too, so a replay of a trajectory with a declared world says
+so beside it:
+
+```
+  faithful: the reconstruction addresses the same objects as the recording
+  note: reactor was served from the recording, not re-driven: this replay verified the program, not the world
+```
+
+The forcing case is a reward recomputed offline against a materialised `state_root`
+(`noidroid score`): the honest sentence is "recomputed from the recording, not measured
+against the world" — not silence, and not a blanket downgrade of the recording.
+
+### 14.3 The per-world signal is testimony, gated on execution
+
+`Delivery::Executed` alone would be too coarse: it is per step, and a step can execute
+while the program says nothing about a world it did not touch. What #52 implements is
+finer. `Reported` remembers, per world, whether its current observation was the
+program's own (`Testimony::Observed`) or supplied by the engine (`Testimony::Replayed`),
+and carrying the program's own last observation across a silent step is not a
+downgrade. Execution is only the gate on *when* that is counted: a step that performed
+nothing claims nothing.
+
+### 14.4 The floor
+
+#52 moves the engine from "silence passes" to "silence is recorded as silence," and
+claims no more than that. An adapter can still call `observe()` with a stale or
+fabricated value without re-driving anything, and the engine cannot tell. The only
+source of truth about a world the engine cannot see is the program that can (§7.1).
+What is structurally knowable from inside the engine is whether the program said
+*anything new* about the world this step. Whether it was *true* is not, and no version
+of this model closes that. Recording it as a stated limit is the correct outcome.
+
+What does close the gap in practice is a behavioural test per adapter: run the same
+branch with and without the re-drive, and assert the reports differ. Both in-tree
+adapters have one (§14.5).
+
+### 14.5 The browser adapter had the same hole; it is closed the same way
+
+`clients/python/noidroid/browser.py`'s `_reconstruct` already re-drives and verifies,
+and predates #52 — but nothing tested that *removing* it changed anything; the claim
+lived only in prose (`examples/reference/README.md`'s equivalent sentence for the
+reactor: "delete `_catch_up()` and the branch still runs..."). The reference
+environment already had a test for its own version of this,
+`the_counterfactual_world_is_re_driven_rather_than_assumed`
+(`crates/noidroid-core/tests/environment_slice.rs`), proving the claim by a behavioural
+flip rather than by inspecting code. The browser adapter had no equivalent.
+
+#53 closes the browser side the same way. `Browser.__init__` reads
+`NOIDROID_BROWSER_MUTE`; when set, `_ensure_browser` skips the call to `_reconstruct`
+and the fresh browser is left on `about:blank` instead of the recorded page. The new
+test `the_counterfactual_browser_is_re_driven_rather_than_assumed`
+(`crates/noidroid-core/tests/browser_slice.rs`) records a session, branches it twice
+past a decision whose very next action is a `read()` rather than a `goto` — so nothing
+downstream can coincidentally paper over a skipped re-drive — and asserts that the
+muted branch reads a different page (`about:blank`, a different digest) than the
+re-driven one, which reproduces the recorded digest exactly. Before this test, a run
+with `_reconstruct` deleted and a run without the deletion were indistinguishable by
+anything the suite checked; now they are not.
+
+### 14.6 `--verify` is unaffected; its unbuilt sibling inherits the same limit
+
+`noidroid --verify` (`Command::Verify` / `cmd_verify`) checks store integrity — every
+object still hashes to its own name — and reads recorded values back to catch bodies
+mangled on the way in (pre-#56). It is orthogonal to everything above and needs no
+change here.
+
+`noidroid replay` is already the positive-form check for the axis it can prove: hash
+equality over the workspace, no threshold, consistent with C4. The AV-resimulation
+approach of validating by re-running a section that should not diverge
+(`research/discoveries/2026-08-19-verify-by-double-execution.md`) is already how
+replay works for the `captured` part of a recording.
+
+The distinct feature that card actually proposes — `run --verify`, replaying a
+recording immediately after making it, to catch capture gaps as divergence — is not
+built and stays out of scope for #53; it is tracked on its own in
+`research/README.md`. What #53 settles for it ahead of time: because it would run
+under `Mode::Replay`, §14.2 applies to it directly. It can only ever validate the
+`captured` (workspace) part of a recording by construction, and it must say so —
+printing a clean divergence-free result from a `run --verify` must not be read as
+having re-verified a declared world it never re-drove. Building it without that
+sentence would be the same trap Q1 exists to name, wearing a new command name.
+
 ---
 
 ## Appendix: the laws
@@ -531,3 +650,6 @@ Existing trajectories replay, branch, export and import unchanged. No migration.
 4. Grip and provenance only ever get weaker downstream.
 5. What cannot be grounded is `unknown`, and `unknown` is never repaired.
 6. The past is immutable; a branch is a new step whose parent is somebody else's.
+7. A comparison is evidence only about what this run actually produced; serving the
+   recording's own value back to itself and calling the match a check proves nothing,
+   however clean it looks.

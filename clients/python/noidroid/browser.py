@@ -120,6 +120,13 @@ class Browser:
         self._served = {"replayed": 0, "live": 0, "blocked": 0}
         self._blocked: list[str] = []
 
+        # Test-only escape hatch: skip the re-drive in `_ensure_browser` and go
+        # straight to a blank page, the way `REFERENCE_MUTE` does for the reference
+        # environment. `docs/environment-model.md` §7.1 says the engine cannot check
+        # that an adapter re-drove its world -- this is what lets a test check it
+        # instead, by comparing a run with the re-drive against one without.
+        self._mute_reconstruct = os.environ.get("NOIDROID_BROWSER_MUTE") == "1"
+
     # ------------------------------------------------------------------ actions
 
     def goto(self, url: str, wait_for: Optional[str] = None) -> dict:
@@ -275,8 +282,16 @@ class Browser:
             return
         self._launch()
         prior = self._recorded_actions()
-        if prior:
-            self._reconstruct(prior)
+        if not prior:
+            return
+        if self._mute_reconstruct:
+            print(
+                f"[noidroid.browser] NOIDROID_BROWSER_MUTE=1: skipping the re-drive of "
+                f"{len(prior)} recorded action(s); the counterfactual starts from a "
+                f"blank page instead of the reconstructed one"
+            )
+            return
+        self._reconstruct(prior)
 
     def _reconstruct(self, prior: list[dict]) -> None:
         """Bring a fresh browser to the state the recording left it in.
