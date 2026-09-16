@@ -165,3 +165,83 @@ fn the_help_names_the_sweep() {
         "the top-level help should list sweep: {help}"
     );
 }
+
+/// Catches a raised failure and falls back, but still validates what it uses. A retry
+/// that works is handling, and must not be reported — or failed in CI — as a gap.
+const RESILIENT: &str = r#"
+import noidroid
+nd = noidroid.connect()
+try:
+    answer = nd.call("world.read", lambda: {"temp": 41}, args={})
+except Exception:
+    answer = {"temp": 20}
+if isinstance(answer, dict) and "temp" in answer:
+    nd.finish("success", {"temp": answer["temp"]})
+else:
+    nd.finish("failure", {"reason": "the answer was not usable"})
+"#;
+
+#[test]
+fn a_raised_failure_the_agent_handles_is_survived_not_absorbed() {
+    let dir = workdir("resilient");
+    let agent = write_agent(&dir, RESILIENT);
+    let (recorded, ok) = noidroid(&dir, &["run", "--", "python3", agent.to_str().unwrap()]);
+    assert!(ok, "recording failed: {recorded}");
+
+    let (report, ok) = noidroid(&dir, &["sweep", "run-1"]);
+    assert!(
+        ok,
+        "an agent that catches a timeout and still validates what it uses must not fail the sweep: {report}"
+    );
+    assert!(report.contains("survived"), "{report}");
+    assert!(
+        !report.contains("absorbed:"),
+        "a handled raise is not a validation gap: {report}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_run_that_did_not_succeed_cannot_show_absorption() {
+    let dir = workdir("failing");
+    let agent = dir.join("agent.py");
+    std::fs::write(
+        &agent,
+        r#"
+import noidroid
+nd = noidroid.connect()
+nd.call("world.read", lambda: {"temp": 41}, args={})
+nd.finish("failure", {"reason": "it was always going to"})
+"#,
+    )
+    .unwrap();
+    let (recorded, _) = noidroid(&dir, &["run", "--", "python3", agent.to_str().unwrap()]);
+    assert!(recorded.contains("failure"), "{recorded}");
+
+    let (report, ok) = noidroid(&dir, &["sweep", "run-1"]);
+    assert!(
+        ok,
+        "a failing run that stays failing proved nothing, so it is not a finding: {report}"
+    );
+    assert!(report.contains("proves"), "and it says why: {report}");
+    assert!(!report.contains("absorbed:"), "{report}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_second_sweep_still_reports_what_the_first_found() {
+    let dir = workdir("again");
+    let agent = write_agent(&dir, CREDULOUS);
+    let (_, ok) = noidroid(&dir, &["run", "--", "python3", agent.to_str().unwrap()]);
+    assert!(ok);
+
+    let (first, first_ok) = noidroid(&dir, &["sweep", "run-1"]);
+    let (second, second_ok) = noidroid(&dir, &["sweep", "run-1"]);
+    assert!(!first_ok && !second_ok, "both find the absorption");
+    assert_eq!(
+        first.matches("absorbed:").count(),
+        second.matches("absorbed:").count(),
+        "probes left by the first sweep are read back, not silently dropped:\n{first}\n---\n{second}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

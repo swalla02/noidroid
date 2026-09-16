@@ -27,23 +27,18 @@ how the package version relates to `STEP_VERSION`, the on-disk object format.
   environments from the ecosystem remains unverified and is the kill criterion this
   adapter was built to test. (#66)
 - **`noidroid sweep` — try every named failure against every recorded call.**
-  `--inject <kind>` (#60) branches one call at a time; `bisect` already sweeps every
-  recorded *decision* to find which one, changed, flips the outcome. `sweep` is the
-  same idea over the other axis: every recorded call, crossed with all six named
-  failures. The reading inverts from `bisect`, though. Nothing here really happened,
-  so a call that flips the verdict when it is made to fail is the unsurprising
-  result — of course an uncaught timeout aborts the run. A call that does **not**
-  flip it, especially `malformed` or `empty`, the two that raise nothing, means
-  nothing downstream ever looked at what came back before trusting it. That is
-  worded `absorbed` rather than borrowing `bisect`'s "no flip found", because here
-  it is the finding, not the disappointment. `sweep` runs every probe rather than
-  stopping at the first flip — the absorbed result is often not the first one — and
-  exits non-zero exactly when it finds at least one, so it can be wired into CI as a
-  robustness gate the way `bisect`'s exit code already works as a causality gate. A
-  separate command rather than a `bisect` flag: the two disagree on what "nothing
-  flipped" means (bisect: found nothing; sweep: found the good news), and forcing
-  one flag to carry both meanings would have made the exit code and the wording lie
-  about at least one of them. (#59)
+  `--inject <kind>` (#60) branches one call at a time, and `bisect` sweeps every
+  recorded *decision*. `sweep` covers the other axis: every recorded call, crossed with
+  all six named failures. Its words depend on the kind of failure. A raised failure
+  that the run catches and still succeeds through is **survived**, which is handling.
+  A success that stands on an `empty` or `malformed` answer is **absorbed**, which is
+  the finding. Either the agent handled that answer or it never looked, and the printed
+  `noidroid diff` shows which. A run that did not succeed cannot show absorption, and
+  says so. Every probe runs, probes from an earlier sweep are read back rather than
+  silently skipped, and the exit code is non-zero only when something was absorbed, so
+  a well-built agent is never failed in CI for its retries. It is a separate command
+  rather than a `bisect` flag because the two disagree on what "nothing changed"
+  means. (#59)
 - **`noidroid doctor` — what a recording would and would not cover, before one is
   made.** Automatic capture fails open by construction: every patching mechanism can
   miss a surface, and a recording that missed one still looks real. `--auto` already
