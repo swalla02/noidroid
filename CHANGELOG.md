@@ -20,6 +20,15 @@ how the package version relates to `STEP_VERSION`, the on-disk object format.
   async streaming call is refused by name at the call site, not handed to a serialiser
   that fails somewhere else. Programs written by hand get the same thing as
   `Session.acall`. (#33)
+- **`noidroid score <trajectory> --at <step> -- <command>` re-runs a checker against
+  a step's recorded state, offline.** It materialises the step's `state_root` into a
+  scratch directory, runs the command there, and prints a citable tuple: step address,
+  state root, command, exit status and grip. A reward function or a test can change
+  and be re-scored without regenerating the episode, because the state it needs was
+  addressed the day the step was recorded. It stores nothing, judges nothing and knows
+  nothing about tasks. It says in words whether the checker saw the whole recorded state
+  or only the workspace, because a declared world's fingerprint cannot be materialised.
+  (#65)
 - **An OpenEnv adapter — `state()` becomes a declared, witnessed world.** OpenEnv
   (github.com/meta-pytorch/OpenEnv) standardises RL and agentic environments on three
   methods: `reset()`, `step(action)`, `state()`. `noidroid.openenv.OpenEnvAdapter`
