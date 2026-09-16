@@ -186,6 +186,33 @@ asyncio.run(main())
 nd.finish("success", {})
 "#;
 
+/// The sync counterpart: `client.messages.stream()` on `anthropic.Anthropic`. Before
+/// #99 this was not refused at all — the SDK's `Stream` object reached the RPC layer,
+/// failed to serialise, and surfaced as an unrelated `AttributeError` from deeper in
+/// the SDK.
+const SYNC_STREAMING_AGENT: &str = r#"
+import os
+import anthropic
+import noidroid
+
+nd = noidroid.connect()
+nd.call("setup.ok", lambda: {"ok": True})
+
+client = anthropic.Anthropic(
+    api_key="not-a-real-key", base_url=os.environ.get("FAKE_API", "http://127.0.0.1:1")
+)
+with client.messages.stream(
+    model="claude-opus-5",
+    max_tokens=8,
+    messages=[{"role": "user", "content": "count to six"}],
+) as stream:
+    for _ in stream.text_stream:
+        pass
+
+# Unreached if the streaming attempt above was refused, as it must be.
+nd.finish("success", {})
+"#;
+
 fn sdk_available() -> bool {
     matches!(
         Command::new("python3")
@@ -571,14 +598,24 @@ fn concurrent_async_calls_keep_dispatch_order_not_completion_order() {
 /// is a confusing failure somewhere downstream instead of a clear one at the source).
 #[test]
 fn an_async_streaming_call_is_refused_by_name_not_silently_recorded() {
+    assert_streaming_is_refused("auto-async-stream", ASYNC_STREAMING_AGENT);
+}
+
+/// #99: the sync path must refuse the same way, not crash three layers away.
+#[test]
+fn a_sync_streaming_call_is_refused_by_name_not_crashed_on() {
+    assert_streaming_is_refused("auto-sync-stream", SYNC_STREAMING_AGENT);
+}
+
+fn assert_streaming_is_refused(tag: &str, source: &str) {
     if !sdk_available() {
         eprintln!("SKIP: needs the anthropic SDK (pip install anthropic)");
         return;
     }
 
-    let dir = scratch("auto-async-stream");
+    let dir = scratch(tag);
     let agent = dir.join("agent.py");
-    fs::write(&agent, ASYNC_STREAMING_AGENT).unwrap();
+    fs::write(&agent, source).unwrap();
 
     let repo = Repo::open(&dir).unwrap();
     let pythonpath = format!("{}:{}", bootstrap_path().display(), client_path().display());

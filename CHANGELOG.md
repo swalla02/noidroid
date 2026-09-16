@@ -208,6 +208,11 @@ how the package version relates to `STEP_VERSION`, the on-disk object format.
 
 ### Fixed
 
+- **A sync streaming call under `--auto` crashed with an unrelated error instead of
+  being refused.** `client.messages.stream()` handed the SDK's `Stream` object to a
+  serialiser that could not take it, and what surfaced was an `AttributeError` from
+  deep inside the SDK. The sync wrapper now refuses a streaming request by name, the
+  same way the async one does. (#99)
 - **`Store`'s and `tree`'s own unit-test `tmp()` helpers still named scratch
   directories from pid and `SystemTime::now()` alone, with no counter.** #44 gave
   `Store::put`'s scratch name and `watch_slice`'s fixture directory a `SEQ:
