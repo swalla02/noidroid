@@ -541,6 +541,7 @@ export PYTHONPATH=$PWD/clients/python        # or: pip install -e clients/python
 | `noidroid run -- <cmd>` | run a program and record its trajectory |
 | `noidroid doctor [-- <cmd>]` | say what a recording would and would not cover, before making one |
 | `noidroid log [<traj>]` | list trajectories, or show one as a timeline |
+| `noidroid log --irreversible <traj>` | every irreversible effect in a trajectory's family of branches, once each: performed, simulated or denied |
 | `noidroid show <traj>@<step>` | inspect a checkpoint and how to explore from it |
 | `noidroid replay <traj>` | re-derive a trajectory and check it still hashes the same |
 | `noidroid branch <traj>@<step>` | diverge: `--decide`, `--result`, `--fail` or `--inject` |
