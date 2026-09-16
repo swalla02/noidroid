@@ -205,33 +205,78 @@ fn an_installed_sdk_names_every_request_surface_and_whether_it_is_hooked() {
     }
     let dir = workdir("sdk");
 
-    let (report, ok) = noidroid(&dir, &["doctor"]);
+    let (report, _) = noidroid(&dir, &["doctor"]);
 
     // Both surfaces are read back out of the SDK after running the real installer, so
     // this is what is patched rather than what we meant to patch.
+    for surface in [
+        "anthropic._base_client.SyncAPIClient.request",
+        "anthropic._base_client.AsyncAPIClient.request",
+    ] {
+        assert!(
+            report.contains(&format!("hooked      {surface}")),
+            "{surface} is named and hooked (#33): {report}"
+        );
+    }
+    assert!(!report.contains("NOT hooked"), "{report}");
+    let line = line_about(&report, "anthropic");
     assert!(
-        report.contains("anthropic._base_client.SyncAPIClient.request"),
-        "the hooked surface is named: {report}"
+        line.contains(" ok "),
+        "an SDK whose every surface is patched is fine: {line}"
     );
-    assert!(
-        report.contains("anthropic._base_client.AsyncAPIClient.request"),
-        "and so is the one that is present and not hooked: {report}"
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A stand-in `openai` whose base client module has a third request surface the
+/// installer has never heard of. That is the case doctor enumerates `*APIClient`
+/// classes for rather than trusting `auto`'s own list — and the only way left to see
+/// `blocked` now that every real surface is hooked.
+const SDK_WITH_AN_UNKNOWN_SURFACE: &[(&str, &str)] = &[
+    ("openai/__init__.py", "__version__ = '0.0.0-standin'\n"),
+    (
+        "openai/_base_client.py",
+        "class SyncAPIClient:\n    def request(self, *a, **k): pass\n\n\
+         class AsyncAPIClient:\n    async def request(self, *a, **k): pass\n\n\
+         class RealtimeAPIClient:\n    def request(self, *a, **k): pass\n",
+    ),
+];
+
+#[test]
+fn a_request_surface_the_installer_does_not_know_blocks_the_recording() {
+    let dir = workdir("unknown-surface");
+    let sdk = dir.join("sdk");
+    for (path, source) in SDK_WITH_AN_UNKNOWN_SURFACE {
+        let file = sdk.join(path);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(file, source).unwrap();
+    }
+    let root = repo_root();
+    let pythonpath = std::env::join_paths([sdk.clone(), root.join("clients/python")]).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_noidroid"))
+        .arg("doctor")
+        .current_dir(&dir)
+        .env("PYTHONPATH", pythonpath)
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("the binary should run");
+    let report = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
     );
+
     assert!(
-        report.contains("NOT hooked"),
+        report.contains("NOT hooked  openai._base_client.RealtimeAPIClient.request"),
         "an unhooked surface has to be unmissable: {report}"
     );
-    assert!(
-        report.contains("#33"),
-        "the async hole is filed, and is named rather than implied covered: {report}"
-    );
-    let line = line_about(&report, "anthropic");
+    let line = line_about(&report, "openai");
     assert!(
         line.contains("blocked"),
         "an installed SDK with an unpatched surface is a hard fail: {line}"
     );
     assert!(
-        !ok,
+        !output.status.success(),
         "and a blocked check must not exit zero, or CI would not notice it: {report}"
     );
 

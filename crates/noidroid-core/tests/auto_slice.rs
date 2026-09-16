@@ -416,7 +416,10 @@ fn an_uninstrumented_async_program_records_and_replays() {
 
     let report = engine::run(&repo, &spec(Some("async-1")), Mode::Record, None)
         .expect("recording an uninstrumented async program should work");
-    let recorded = report.trajectory.clone().expect("a recording produces a trajectory");
+    let recorded = report
+        .trajectory
+        .clone()
+        .expect("a recording produces a trajectory");
     assert!(
         report
             .last_words
