@@ -545,6 +545,7 @@ export PYTHONPATH=$PWD/clients/python        # or: pip install -e clients/python
 | `noidroid replay <traj>` | re-derive a trajectory and check it still hashes the same |
 | `noidroid branch <traj>@<step>` | diverge: `--decide`, `--result`, `--fail` or `--inject` |
 | `noidroid checkout <traj>@<step> <dir>` | write out the workspace as it was |
+| `noidroid score <traj> --at <step> -- <cmd>` | re-run a checker against a step's recorded state, offline; stores and judges nothing |
 | `noidroid run --proxy -- <cmd>` | record an agent you did not write, in any language |
 | `noidroid bisect <traj>` | find which decision, changed, would have flipped the outcome |
 | `noidroid sweep <traj>` | find which call, made to fail, changes the verdict — and which don't |

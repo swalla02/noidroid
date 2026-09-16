@@ -2,6 +2,7 @@
 //! have happened instead.
 
 use std::collections::BTreeMap;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -15,7 +16,7 @@ use noidroid_core::engine::{self, Mode, Report, RunSpec};
 use noidroid_core::intact::{self, Reading};
 use noidroid_core::model::{Action, Failure, Intervention, Provenance, Step, Trajectory};
 use noidroid_core::repo::{self, Repo};
-use noidroid_core::{tree, Error, Result};
+use noidroid_core::{tree, Doing, Error, Result};
 
 mod doctor;
 mod palette;
@@ -135,6 +136,17 @@ enum Command {
         /// A tree address, as printed by `restore` or `show`.
         address: String,
         directory: PathBuf,
+    },
+    /// Re-run a checker against a step's recorded state, offline.
+    Score {
+        /// The trajectory to score.
+        trajectory: String,
+        /// The step whose state to materialise.
+        #[arg(long)]
+        at: u64,
+        /// The checker to run, after `--`.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
+        command: Vec<String>,
     },
     /// Find which decision, changed, would have flipped the outcome.
     Bisect {
@@ -302,6 +314,11 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
             );
             Ok(ExitCode::SUCCESS)
         }
+        Command::Score {
+            trajectory,
+            at,
+            command,
+        } => cmd_score(&repo, &trajectory, at, command),
         Command::Bisect {
             trajectory,
             goal,
@@ -1005,6 +1022,114 @@ fn cmd_restore(repo: &Repo, reference: &str, into: Option<PathBuf>) -> Result<Ex
         before,
         target.display()
     );
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Re-run a checker against a step's recorded state, offline.
+///
+/// A composition of `checkout-tree` and a subprocess: materialise the step's
+/// `state_root` into a scratch directory nobody else uses, run the command there for
+/// real, and print what happened. Nothing is written back into the trajectory — a
+/// reward function can change and be re-scored for free, because the state it needs
+/// was already addressed the day the step was recorded.
+///
+/// It stores nothing, judges nothing, and knows nothing about tasks: no task
+/// registry, no scoring rule, no reward model. Just a tree, and a command run against
+/// it.
+fn cmd_score(repo: &Repo, name: &str, at: u64, command: Vec<String>) -> Result<ExitCode> {
+    let t = repo.load_trajectory(name)?;
+    let chain = repo.chain(&t)?;
+    let (digest, step) = chain
+        .get(at as usize)
+        .ok_or_else(|| Error::NotFound(format!("{name} has no step {at}")))?;
+
+    let scratch = repo
+        .tmp_dir()
+        .join(format!("score-{name}-{at}-{}", std::process::id()));
+    if scratch.exists() {
+        fs::remove_dir_all(&scratch)
+            .doing(|| format!("clearing the scratch directory {}", scratch.display()))?;
+    }
+    fs::create_dir_all(&scratch)
+        .doing(|| format!("creating the scratch directory {}", scratch.display()))?;
+
+    // Same rule as `checkout-tree`: what was never recorded is never restored. `.world`
+    // is evidence about a world we cannot see, not any part of it, and materialising it
+    // would let a checker read testimony as if it were a file the run produced.
+    //
+    // Nothing else is skipped. `Ignores::for_directory` would add the defaults for a
+    // watched project (`build`, `dist`, `node_modules`, …), and those filter the
+    // *recorded* entries too: a sandbox run that wrote `dist/` would reach its checker
+    // without it, and the score would be computed over a state nobody recorded.
+    let mut ignores = tree::Ignores::none();
+    ignores.add(noidroid_core::env::WORLD_DIR);
+    tree::materialize_with(&step.state_root, &repo.store, &scratch, &ignores)?;
+
+    let joined_command = command.join(" ");
+    let output = std::process::Command::new(&command[0])
+        .args(&command[1..])
+        .current_dir(&scratch)
+        .output()
+        .map_err(|e| Error::Refused(format!("could not run '{joined_command}': {e}")))?;
+    let status = output.status.code();
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+
+    // What the checker actually saw. `captured` means the bytes it read are the whole
+    // recorded state. Anything weaker means the step also rested on a declared world
+    // that was only ever fingerprinted, or not seen at all -- and no fingerprint can be
+    // materialised, so the checker scored the workspace, not everything that produced
+    // the step. Said in words, because a bare `true` next to a score reads as approval.
+    let scored = if step.grip.is_captured() {
+        "the whole recorded state"
+    } else {
+        "the workspace only; a declared world is not materialised"
+    };
+
+    println!("{} {}@{}", shell("SCORE"), name, at);
+    println!("  {:<12} {}", dim("command"), joined_command);
+    println!("  {:<12} {}", dim("state"), step.state_root);
+    println!(
+        "  {:<12} {}",
+        dim("status"),
+        match status {
+            Some(0) => ok("0"),
+            Some(code) => warn(&code.to_string()),
+            None => warn("signalled"),
+        }
+    );
+    println!("  {:<12} {}", dim("grip"), step.grip.label());
+    println!(
+        "  {:<12} {}",
+        dim("scored"),
+        if step.grip.is_captured() {
+            ok(scored)
+        } else {
+            warn(scored)
+        }
+    );
+
+    println!(
+        "\n  ({:?}, {:?}, {:?}, {}, {:?})",
+        digest.to_string(),
+        step.state_root.to_string(),
+        joined_command,
+        status
+            .map(|c| c.to_string())
+            .unwrap_or_else(|| "null".to_string()),
+        step.grip.label(),
+    );
+
+    for (label, text) in [("STDOUT", &stdout), ("STDERR", &stderr)] {
+        if !text.trim().is_empty() {
+            println!("\n  {}", shell(label));
+            for line in text.lines() {
+                println!("    {line}");
+            }
+        }
+    }
+
+    let _ = fs::remove_dir_all(&scratch);
     Ok(ExitCode::SUCCESS)
 }
 
