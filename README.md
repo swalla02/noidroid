@@ -338,6 +338,49 @@ step and calling it the cause.
 
 ---
 
+## Sweeping for validation gaps
+
+`bisect` explains an outcome that already happened. `sweep` asks a different question
+of the same shape: which call, *made* to fail, changes the verdict? Every recorded call
+is branched against all six named failures, the way `bisect` branches every decision
+against its alternatives.
+
+```console
+$ noidroid sweep run-1
+SWEEP run-1 (ended success)
+  probing 6 failure kind(s) across 1 call(s) — 6 probe(s)
+
+  @1 call world.read × timeout      aborted  ← flips it
+  @1 call world.read × server-error aborted  ← flips it
+  @1 call world.read × rate-limited aborted  ← flips it
+  @1 call world.read × malformed    success  ← absorbed: succeeded on an answer that was not one
+  @1 call world.read × empty        success  ← absorbed: succeeded on an answer that was not one
+  @1 call world.read × unauthorized aborted  ← flips it
+
+  2 absorbed — the run still succeeded when a call answered with nothing usable:
+    @1 world.read × malformed    still success
+      noidroid diff run-1 run-1~1~malformed
+    @1 world.read × empty        still success
+      noidroid diff run-1 run-1~1~empty
+  either the agent handled that answer or it never looked at it — the diff shows which
+```
+
+Here the reading inverts from `bisect`, and what it means depends on the kind of
+failure. A flip is the ordinary outcome: an uncaught timeout aborts the run. A
+**raised** failure (timeout, 500, 429, 401) that the run catches and still succeeds
+through is reported as **survived**. That is handling, and it never fails the sweep.
+An **absorbed** probe is the finding: `empty` and `malformed` raise nothing, and the run
+succeeded anyway on an answer that was not one. Either the agent handled that answer or
+it never looked at it, and `noidroid diff` shows which.
+
+A run that did not succeed cannot show absorption. A failure that leaves a failing run
+failing proves nothing about the call, and `sweep` says so instead of reporting it.
+Every probe runs rather than stopping at the first flip, and probes left by an earlier
+sweep are read back rather than dropped. The exit code is non-zero only when something
+was absorbed, so an agent is never failed in CI for handling its errors.
+
+---
+
 ## What the exploring cost
 
 "They cost nothing" is a claim, so it is one the tool has to be able to show.
@@ -452,13 +495,26 @@ you need, because nothing is said in colour that is not also said in words.
 
 ## Quickstart
 
-Requires Rust ≥ 1.74, Python ≥ 3.9, Linux or macOS.
+```bash
+curl -fsSL https://raw.githubusercontent.com/swalla02/noidroid/main/install.sh | sh
+```
+
+x86_64 and arm64, Linux and macOS. The binary lands in `~/.local/bin`; set
+`NOIDROID_INSTALL_DIR` to put it somewhere else, or `NOIDROID_VERSION` to pin a
+release. It is checked against its published SHA-256 before it is installed.
+
+```bash
+noidroid stand        # 「 ゴ ゴ ゴ ゴ 」
+```
+
+Then, to record something. The example agent lives in the repository, and the
+Python client is what a recorded program talks to, so this part still wants a
+clone — [#104](https://github.com/swalla02/noidroid/issues/104) is about
+removing that. Python ≥ 3.9:
 
 ```bash
 git clone https://github.com/swalla02/noidroid && cd noidroid
-cargo build --release
-export PATH=$PWD/target/release:$PATH
-export PYTHONPATH=$PWD/clients/python        # or: pip install -e clients/python
+pip install -e clients/python
 
 noidroid run -- python3 examples/flight_agent/agent.py
 noidroid show run-1@2
@@ -466,17 +522,34 @@ noidroid branch run-1@2 --decide pick_flight=FL-203 --simulate 'payments.charge=
 noidroid diff run-1 alt-1
 ```
 
+<details>
+<summary>Building it yourself instead</summary>
+
+Requires Rust ≥ 1.74.
+
+```bash
+git clone https://github.com/swalla02/noidroid && cd noidroid
+cargo build --release
+export PATH=$PWD/target/release:$PATH
+export PYTHONPATH=$PWD/clients/python        # or: pip install -e clients/python
+```
+
+</details>
+
 | Command | |
 |---|---|
 | `noidroid run -- <cmd>` | run a program and record its trajectory |
 | `noidroid doctor [-- <cmd>]` | say what a recording would and would not cover, before making one |
 | `noidroid log [<traj>]` | list trajectories, or show one as a timeline |
+| `noidroid log --irreversible <traj>` | every irreversible effect in a trajectory's family of branches, once each: performed, simulated or denied |
 | `noidroid show <traj>@<step>` | inspect a checkpoint and how to explore from it |
 | `noidroid replay <traj>` | re-derive a trajectory and check it still hashes the same |
 | `noidroid branch <traj>@<step>` | diverge: `--decide`, `--result`, `--fail` or `--inject` |
 | `noidroid checkout <traj>@<step> <dir>` | write out the workspace as it was |
+| `noidroid score <traj> --at <step> -- <cmd>` | re-run a checker against a step's recorded state, offline; stores and judges nothing |
 | `noidroid run --proxy -- <cmd>` | record an agent you did not write, in any language |
 | `noidroid bisect <traj>` | find which decision, changed, would have flipped the outcome |
+| `noidroid sweep <traj>` | find which call, made to fail, changes the verdict — and which don't |
 | `noidroid cost [<traj>]` | add up what the model calls used, and what was bought |
 | `noidroid restore <traj>@<step>` | put the files back as they were, keeping a way out |
 | `noidroid export` · `import` | move a trajectory between machines, as one committable file |
@@ -532,6 +605,15 @@ the files too. A server-sent event stream is passed through as it arrives, so an
 under recording sees its tokens on the same schedule as one that is not; everything
 else is still read in full before it is written back.
 
+A trajectory holds a body as text, so the proxy refuses rather than record anything
+that is not: a binary response (Anthropic's Files API, OpenAI's speech endpoints), a
+content coding it does not implement (it asks upstream for `identity` and inflates
+gzip or deflate if a provider sends one anyway; brotli or zstd fails the call), and an
+event stream a provider compressed despite that request — inflating one incrementally,
+without disturbing the schedule the passthrough exists to preserve, is a second
+mechanism nobody has needed yet (#72). Each refusal lands in the trajectory as a
+failed step with the reason, not a body full of replacement characters.
+
 ### What neither can do
 
 What automatic capture **cannot** do is branch. No amount of patching can infer that a
@@ -542,22 +624,47 @@ value was a *choice among alternatives*, and that is what an intervention needs 
 pick = nd.decide("route", options=candidates, choice=candidates[0])
 ```
 
-It also does not capture async clients, streaming responses, non-SDK HTTP, the clock,
-randomness, or what a child process does — and it will not quietly record around
-them. `--auto` prints what it hooked *and* what it could not, and **refuses to
+Async clients are captured: `await client.messages.create(...)` records and replays
+like the sync call. Concurrent async calls are serialised while recording, so step order
+is the order they were dispatched, not the order they finished. That is what keeps a
+replay reproducible, and it means an `asyncio.gather` of provider calls runs one at a
+time while it is recorded. It does not capture streaming responses, non-SDK HTTP, the
+clock, randomness, or what a child process does, and it will not quietly record
+around them. A streaming call is refused by name the moment it is attempted. `--auto` prints what it hooked *and* what it could not, and **refuses to
 record** when it finds a surface it cannot cover. A subprocess is caught the moment
 the program actually spawns one — `subprocess.run`, `.call`, `Popen` directly, all of
 it — not merely a library that happens to import the module for its own reasons:
 
 ```console
 $ noidroid run --auto -- python3 agent.py
-[noidroid.auto] hooked: anthropic._base_client.SyncAPIClient.request
-[noidroid.auto] NOT hooked: anthropic._base_client.AsyncAPIClient.request — calls
-                through it are not recorded
-[noidroid.auto] refusing to record: the surfaces above are not captured, so this
-                recording would be incomplete without saying so.
-  Record it anyway with --allow-gaps if you know your program does not use them.
+[noidroid.auto] hooked: anthropic._base_client.SyncAPIClient.request,
+                anthropic._base_client.AsyncAPIClient.request
+[noidroid.auto] NOT hooked: subprocess — a child process does not inherit the
+                bootstrap, so nothing it does is mediated, fenced, or reported
+[noidroid.auto] refusing to record: the program is about to spawn a child process,
+                which is not captured, so this recording would be incomplete without
+                saying so.
+  Record it anyway with --allow-gaps if you know the rest of the program does not
+  depend on what the child does.
 ```
+
+Randomness is not *captured* — a call into it is still not a recorded step, and no
+value it produces is stored on the trajectory — but as of #77 it is *controlled*: the
+engine mints a `u64` seed at genesis and serves the same one back on every replay and
+branch, and `--auto`'s bootstrap seeds Python's `random` and, if it is importable,
+`numpy.random` from it before your program's own code runs:
+
+```console
+[noidroid.auto] seeded: random, numpy.random
+```
+
+That is the same move Minari and Temporal make for exactly this reason: seeding a
+generator is fail-loud where freezing a clock is fail-open — anything left unseeded
+still diverges on replay as loudly as it always did, rather than quietly returning a
+value the program never actually produced. `noidroid.Session.seed` carries the value
+for your program to seed whatever else it needs; **no noidroid client code may draw
+from a generator seeded with it** — that would make the client's own bookkeeping part
+of the sequence the program depends on.
 
 And during a replay the network is fenced: an outbound socket to anything but
 loopback is refused, because a reconstruction is supposed to serve every input from
@@ -588,8 +695,8 @@ DOCTOR  what a recording made now would and would not cover
       · limit       Windows is excluded: the socket is hardcoded (#32)
 
   CAPTURE SURFACES
-    anthropic     blocked         0.122.0 is installed, and 1 request surface present here is not hooked
-      · NOT hooked  anthropic._base_client.AsyncAPIClient.request (#33)
+    anthropic     ok              0.122.0 is installed, and every request surface found is hooked
+      · hooked      anthropic._base_client.AsyncAPIClient.request
       · hooked      anthropic._base_client.SyncAPIClient.request
 
   THE PROGRAM
@@ -735,6 +842,12 @@ content and is part of the hash — `real` ⊑ `live` ⊑ `simulated` ⊑ `unkno
 along the chain so it can never improve downstream. *Delivery* is how this run got a
 value — `executed`, `replayed`, `intervened`, `denied` — and is deliberately not
 hashed, so a faithful replay produces the same objects as the run it reproduces.
+
+**What you can edit and still replay is measured, not assumed.**
+[`docs/replay-safety.md`](docs/replay-safety.md) makes five ordinary edits one at a time
+against the reference agent's recording (add an option, rename a call, reorder two
+calls, change an argument, add a call) and records where `noidroid replay` says each
+one diverged.
 
 **Irreversible effects fail safe.** Declaring an effect `irreversible` means it is
 performed only during an original recording. Every replay and every branch refuses it

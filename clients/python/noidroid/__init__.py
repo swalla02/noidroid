@@ -36,14 +36,20 @@ such as a browser page or a simulator. See ``docs/environment-model.md`` §4.2.
 
 Running the same script without ``noidroid run`` is fine: ``connect()`` returns a
 pass-through session that simply executes everything and records nothing.
+
+An ``async def`` program uses ``acall`` in place of ``call`` -- same contract, ``run``
+is an ``async`` callable and is awaited instead of invoked. The engine still answers
+one exchange at a time, so two mediated calls started together do not run concurrently
+against it; see ``Session.acall`` for what that trades away.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import socket
-from typing import Any, Callable, Iterable, Optional
+from typing import Any, Awaitable, Callable, Iterable, Optional
 
 __all__ = [
     "connect",
@@ -154,7 +160,23 @@ class Session:
         self.mode = os.environ.get("NOIDROID_MODE", "record")
         self.workspace = os.environ.get("NOIDROID_WORKSPACE", os.getcwd())
         self.recording = True
-        self._rpc({"op": "hello", "client": f"python-{PROTOCOL_VERSION}"})
+        # Lazily built on first `acall`: it has to be built while a loop is running
+        # (binding an `asyncio.Lock` before one exists is the kind of thing that
+        # changed behaviour across Python versions), and most programs that connect
+        # never make an async call at all.
+        self._async_lock: Optional[asyncio.Lock] = None
+        hello = self._rpc({"op": "hello", "client": f"python-{PROTOCOL_VERSION}"})
+        #: The `u64` the engine minted for this trajectory's own randomness, or
+        #: ``None`` if it did not send one. Freshly minted while recording; served
+        #: back unchanged while replaying or branching, so re-executing a prefix
+        #: never mints a second, disagreeing value.
+        #:
+        #: This is for *your program* to seed its own generators with. No noidroid
+        #: client code may draw from a generator seeded with this value -- doing so
+        #: would make the client's own bookkeeping part of the sequence the program's
+        #: behaviour depends on, which is the FoundationDB `debugRandom()` hazard:
+        #: one extra draw for a log line shifts every value downstream of it.
+        self.seed: Optional[int] = hello.get("seed")
 
     # -- protocol -----------------------------------------------------------
 
@@ -245,6 +267,87 @@ class Session:
             raise Denied(response.get("reason", "denied"))
         raise NoidroidError(f"unknown directive {directive!r}")
 
+    async def acall(
+        self,
+        target: str,
+        run: Callable[[], Awaitable[Any]],
+        args: Optional[dict] = None,
+        effect: str = READ,
+        volatile: Optional[Iterable[str]] = None,
+    ) -> Any:
+        """The async equivalent of `call`: same contract, `run` is awaited instead.
+
+        The engine still speaks one exchange at a time over a single connection --
+        there is no way to make two mediated calls genuinely concurrent on the wire,
+        only to stop one from stalling everything else while it waits. So this
+        method buys you two things and is honest that it does not buy a third:
+
+        * Talking to the engine (writing the request, reading the answer) happens on
+          a worker thread, so a call in flight never blocks the event loop -- other
+          coroutines that are not themselves waiting on a mediated call keep running.
+        * Two calls started together (``asyncio.gather``) queue on an `asyncio.Lock`
+          acquired here, before anything else, so they queue in the order asyncio
+          scheduled them onto the loop -- the same order on every run, record or
+          replay, independent of how long the call at the front of the queue took to
+          answer. That is what keeps step order reproducible; a queue ordered by
+          which worker thread happened to wake up first would not be.
+        * What it does not buy: two mediated calls actually in flight at once. The
+          second waits for the first's full round trip, including the real work
+          `run` does, before its own request even reaches the engine. A concurrent
+          `asyncio.gather` of provider calls is captured correctly but no longer
+          runs concurrently while being recorded.
+        """
+        if self._async_lock is None:
+            # Built here rather than in `__init__`: this only runs inside a live
+            # loop, on the thread that is going to await it, which sidesteps the
+            # cross-version differences in how an `asyncio.Lock` built with no
+            # loop running behaves.
+            self._async_lock = asyncio.Lock()
+        async with self._async_lock:
+            response = await asyncio.to_thread(
+                self._rpc,
+                {
+                    "op": "call",
+                    "target": target,
+                    "args": mask_volatile(args or {}, volatile),
+                    "effect": effect,
+                },
+            )
+            directive = response.get("directive")
+            if directive == "execute":
+                try:
+                    # Same authorisation window as `call`, opened around the await
+                    # instead of a plain call -- `run` still executes on this
+                    # (the event loop's) thread, so the fence's thread-local window
+                    # still scopes to exactly the work it authorised.
+                    from . import fence
+
+                    with fence.authorised():
+                        value = await run()
+                except Exception as exc:  # the world failed; record that it did
+                    await asyncio.to_thread(
+                        self._rpc,
+                        {
+                            "op": "error",
+                            "message": str(exc),
+                            "type": type(exc).__name__,
+                            "unknown": isinstance(exc, Unavailable),
+                        },
+                    )
+                    raise
+                ungrounded = isinstance(value, Ungrounded)
+                if ungrounded:
+                    value = value.value
+                await asyncio.to_thread(
+                    self._rpc, {"op": "result", "value": value, "unknown": ungrounded}
+                )
+                return value
+            if directive == "use":
+                return response.get("value")
+            if directive == "deny":
+                raise Denied(response.get("reason", "denied"))
+            raise NoidroidError(f"unknown directive {directive!r}")
+
     def decide(self, name: str, options: Iterable[Any], choice: Any) -> Any:
         """Declare a decision point, and return the choice to actually use.
 
@@ -323,12 +426,18 @@ class _PassThrough:
 
     mode = "off"
     recording = False
+    #: No engine, so no seed. `sitecustomize.py` treats this the same as an old
+    #: engine that did not send one: nothing gets seeded, and it says so.
+    seed = None
 
     def __init__(self) -> None:
         self.workspace = os.getcwd()
 
     def call(self, target, run, args=None, effect=READ, volatile=None):  # noqa: D102
         return run()
+
+    async def acall(self, target, run, args=None, effect=READ, volatile=None):  # noqa: D102
+        return await run()
 
     def decide(self, name, options, choice):  # noqa: D102
         return choice

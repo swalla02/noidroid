@@ -190,6 +190,24 @@ impl Environment for Workspace {
     }
 }
 
+/// Where the observation in hand came from.
+///
+/// The same fingerprint means two entirely different things depending on this, and
+/// collapsing them is how a reconstruction that touched nothing comes to report that
+/// fingerprints were compared. Mirrors [`Delivery`](crate::model::Delivery), which
+/// draws the same line for everything that is not a world.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Testimony {
+    /// The program looked and said so. A comparison against the recording is a
+    /// comparison of two independently produced answers, which is what makes it worth
+    /// anything.
+    Observed,
+    /// Served from the recording because the program said nothing. The address will
+    /// match whatever the recording says by construction, and that agreement is not
+    /// evidence.
+    Replayed,
+}
+
 /// A world only the program can see.
 ///
 /// The engine cannot look at a browser page, a simulator or an instrument. What it can
@@ -200,6 +218,9 @@ pub struct Reported {
     /// The last observation, stored. `None` means the program declared this world and
     /// told us it is not observing it — which is `Opaque`, and is a legitimate answer.
     seen: Option<Digest>,
+    /// How `seen` got here. A recording only ever observes; the distinction appears
+    /// during reconstruction.
+    testimony: Testimony,
     /// The program claims it can put this world back. Nothing in-tree does; the flag
     /// exists so that an environment which genuinely can is not forced to lie
     /// downwards.
@@ -211,6 +232,7 @@ impl Reported {
         Reported {
             name: name.into(),
             seen: None,
+            testimony: Testimony::Observed,
             restorable,
         }
     }
@@ -218,23 +240,36 @@ impl Reported {
     /// Record what the program says the world looks like now.
     pub fn report(&mut self, state: &Value, store: &Store) -> Result<()> {
         self.seen = Some(store.put_json(state)?);
+        self.testimony = Testimony::Observed;
         Ok(())
     }
 
     /// Declared, and deliberately not observed.
     pub fn unobserved(&mut self) {
         self.seen = None;
+        self.testimony = Testimony::Observed;
     }
 
     pub fn name(&self) -> &str {
         &self.name
     }
 
+    /// The grip the *recording* holds on this world. Goes into the step, so it is a
+    /// property of the trajectory and does not depend on how this run went.
     fn grip(&self) -> Grip {
         match (&self.seen, self.restorable) {
             (None, _) => Grip::Opaque,
             (Some(_), true) => Grip::Captured,
             (Some(_), false) => Grip::Witnessed,
+        }
+    }
+
+    /// The grip *this run* earned. An observation nobody made proves nothing, however
+    /// well it hashes.
+    fn achieved(&self) -> Grip {
+        match self.testimony {
+            Testimony::Observed => self.grip(),
+            Testimony::Replayed => Grip::Opaque,
         }
     }
 
@@ -336,10 +371,18 @@ impl Situation {
         if self.fresh.contains(name) {
             return;
         }
-        self.worlds
+        let world = self
+            .worlds
             .entry(name.to_string())
-            .or_insert_with(|| Reported::new(name, false))
-            .seen = Some(seen);
+            .or_insert_with(|| Reported::new(name, false));
+        // Carrying the program's own last observation forward is not a substitution:
+        // it is already what the world says, and it agrees with the recording. Only a
+        // value the program did not produce is served, and only that costs the run its
+        // grip.
+        if world.seen.as_ref() != Some(&seen) {
+            world.testimony = Testimony::Replayed;
+        }
+        world.seen = Some(seen);
     }
 
     /// The observations recorded in a tree, by world name.
@@ -357,6 +400,26 @@ impl Situation {
     /// to that step, not to the next one.
     pub fn settle(&mut self) {
         self.fresh.clear();
+    }
+
+    /// The grip this run actually earned, as opposed to the one the recording holds.
+    ///
+    /// The two differ exactly when an observation was served from the recording rather
+    /// than made. That is a fact about *this execution*, not about the trajectory, so
+    /// it rides the delivery axis and touches nothing that is hashed.
+    pub fn achieved(&self) -> Grip {
+        self.worlds
+            .values()
+            .fold(Grip::Captured, |acc, w| acc.join(w.achieved()))
+    }
+
+    /// The declared worlds whose observation this run was handed rather than made.
+    pub fn served(&self) -> Vec<String> {
+        self.worlds
+            .values()
+            .filter(|w| matches!(w.testimony, Testimony::Replayed))
+            .map(|w| w.name.clone())
+            .collect()
     }
 
     /// The declared worlds, weakest first — which is the order a reader cares about.
@@ -440,6 +503,114 @@ mod tests {
             .report(&serde_json::json!({"temp": 20}), &store)
             .unwrap();
         assert_eq!(world.manifest().grip, Grip::Witnessed);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A store and a workspace, for the tests that need somewhere to put bytes.
+    fn scratch(tag: &str) -> (PathBuf, Store, PathBuf) {
+        let dir = std::env::temp_dir().join(format!(
+            "nd-env-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let work = dir.join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        let store = Store::open(dir.join("objects")).unwrap();
+        (dir.clone(), store, work)
+    }
+
+    #[test]
+    fn a_world_the_adapter_never_redrove_is_not_reported_as_witnessed() {
+        // The engine hands back the recorded fingerprint for a world the program said
+        // nothing about. The step keeps the grip the *recording* has -- that is a
+        // property of the trajectory and its bytes must not move -- but the run earned
+        // nothing and must not claim a comparison it did not make.
+        let (dir, store, work) = scratch("adopted");
+        let recorded = store.put_json(&serde_json::json!({"temp": 61})).unwrap();
+
+        let mut s = Situation::new(Workspace::new(&work, tree::Ignores::none()));
+        s.adopt("reactor", recorded);
+
+        assert_eq!(
+            s.observe(&store).unwrap().grip,
+            Grip::Witnessed,
+            "the recording holds a fingerprint and the step still says so"
+        );
+        assert_eq!(
+            s.achieved(),
+            Grip::Opaque,
+            "nothing was compared: the answer came from the recording"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn an_adapter_that_redrives_and_matches_still_reports_witnessed() {
+        let (dir, store, work) = scratch("redriven");
+        let seen = serde_json::json!({"temp": 61});
+        let recorded = store.put_json(&seen).unwrap();
+
+        let mut s = Situation::new(Workspace::new(&work, tree::Ignores::none()));
+        s.report("reactor", Some(&seen), false, &store).unwrap();
+        // The engine offers the recorded fingerprint for the same step. The program
+        // already spoke, so its testimony stands and the comparison is real.
+        s.adopt("reactor", recorded);
+
+        assert_eq!(s.observe(&store).unwrap().grip, Grip::Witnessed);
+        assert_eq!(
+            s.achieved(),
+            Grip::Witnessed,
+            "an adapter that did the work keeps the word it earned"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn an_observation_carried_across_a_step_is_not_a_downgrade() {
+        // Over-refusal is the risk on the other side. The program observes on the steps
+        // where it acts and is silent on the ones where it only decides; the engine
+        // offers the recorded fingerprint on those silent steps and it is the same
+        // value the program itself last reported. Nothing was served and nothing is
+        // lost.
+        let (dir, store, work) = scratch("carried");
+        let seen = serde_json::json!({"temp": 61});
+        let recorded = store.put_json(&seen).unwrap();
+
+        let mut s = Situation::new(Workspace::new(&work, tree::Ignores::none()));
+        s.report("reactor", Some(&seen), false, &store).unwrap();
+        s.observe(&store).unwrap();
+        s.settle();
+
+        s.adopt("reactor", recorded);
+        assert_eq!(
+            s.achieved(),
+            Grip::Witnessed,
+            "the value was already the program's own and it agrees with the recording"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_workspace_only_run_reports_exactly_what_it_did_before() {
+        let (dir, store, work) = scratch("plain");
+        std::fs::write(work.join("a.txt"), b"hello").unwrap();
+
+        let mut s = Situation::new(Workspace::new(&work, tree::Ignores::none()));
+        let state = s.observe(&store).unwrap();
+
+        assert_eq!(state.grip, Grip::Captured);
+        assert_eq!(
+            s.achieved(),
+            Grip::Captured,
+            "a run with no declared world has nothing new to say about itself"
+        );
+
         std::fs::remove_dir_all(&dir).ok();
     }
 
