@@ -20,6 +20,12 @@ how the package version relates to `STEP_VERSION`, the on-disk object format.
   whether it was `performed`, `denied`, or `simulated, never run`, because a
   `--simulate`d effect carries a value nobody produced. Read-only; it stores and blocks
   nothing. (#92)
+- **`replay --live` names a model call that continues a server-side session.** A live
+  call carrying `previous_response_id` or `conversation` asks the provider to continue
+  a session whose earlier turns were served from the recording and never sent. The
+  replay now prints the step and the field. The model provider is also a row in the
+  environment model's conformance table: no world when a request is self-contained,
+  an `opaque` one when it names a session. (#91)
 - **`--auto` captures async SDK clients.** `await client.messages.create(...)` on
   `AsyncAnthropic` or `AsyncOpenAI` now records and replays like the sync call. An agent
   that merely imported an async client used to be refused outright. Socket I/O with the
