@@ -81,6 +81,16 @@ answer = nd.call("world.read", lambda: {"temp": 41}, args={})
 nd.finish("read", {"got": answer, "python_type": type(answer).__name__})
 "#;
 
+/// Reports the seed the engine handed back on the handshake, and nothing else. This
+/// is the whole surface #77 adds: the value has to travel from `Action::Genesis`,
+/// through the `Hello` reply, into the client, over the real protocol.
+const SEED_AGENT: &str = r#"
+import noidroid
+
+nd = noidroid.connect()
+nd.finish("seeded", {"seed": nd.seed})
+"#;
+
 struct Fixture {
     dir: PathBuf,
     repo: Repo,
@@ -220,6 +230,44 @@ fn a_recording_replays_to_the_same_objects() {
         "the replay must actually check something"
     );
     assert!(report.faithful());
+}
+
+#[test]
+fn a_record_run_mints_a_u64_seed_at_genesis() {
+    let f = Fixture::with_agent("seed-mint", SEED_AGENT);
+    let recorded = f.record();
+
+    assert!(
+        recorded.outcome.result["seed"].is_u64(),
+        "a recording mints a u64 seed and hands it to the program over the protocol: {:?}",
+        recorded.outcome.result
+    );
+}
+
+#[test]
+fn a_replay_serves_back_the_same_seed_the_recording_minted() {
+    let f = Fixture::with_agent("seed-replay", SEED_AGENT);
+    let recorded = f.record();
+    let minted = recorded.outcome.result["seed"].clone();
+    assert!(minted.is_u64(), "a recording mints a u64 seed");
+
+    // Named, so the replay is itself saved as a trajectory and its own `Hello`
+    // reply -- what the program actually received -- can be read back, rather than
+    // inferring the seed matched from the digests alone.
+    let replayed = engine::run(
+        &f.repo,
+        &f.spec(Some("seed-replay-run"), &[]),
+        Mode::Replay { live: Vec::new() },
+        Some(&recorded),
+    )
+    .expect("replay should run to completion")
+    .trajectory
+    .expect("a named replay produces a trajectory too");
+
+    assert_eq!(
+        replayed.outcome.result["seed"], minted,
+        "a replay must serve back the exact recorded seed, not mint a fresh one"
+    );
 }
 
 #[test]

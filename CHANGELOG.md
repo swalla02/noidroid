@@ -135,6 +135,24 @@ how the package version relates to `STEP_VERSION`, the on-disk object format.
   about the source, not a prediction about what will happen: the value it reads may
   never reach a call argument or the workspace, so a replay may never diverge because
   of it, and the wording says exactly that much. (#71)
+- **The engine mints a seed at genesis; `--auto` uses it to seed `random` and
+  `numpy.random`.** Randomness was neither captured nor controlled: an unmediated
+  `random.random()` or `numpy` draw simply diverged on replay, with no explanation.
+  The fix follows Temporal and FoundationDB, not Minari — the *engine* mints the `u64`
+  at genesis, not the client, because a client-minted seed would mint a second,
+  disagreeing one on every branch that re-executes the prefix. Recorded on
+  `Action::Genesis { seed: Option<u64> }`, handed back over the wire on `Hello`'s
+  reply, and served from the recording — never re-minted — on replay and branch.
+  `--auto`'s bootstrap seeds Python's `random` and, if it is importable, `numpy.random`
+  from it before the program's own code runs, and reports which it seeded the same way
+  it reports what it hooked. This is a byte-compatible addition — `default` on read,
+  skipped on write when absent, the same pattern `Effect::outcome` used — so an old
+  recording's genesis reserialises to the exact bytes it always had and
+  `STEP_VERSION` does not move. Seeding is deliberately not capture: an unseeded
+  source still diverges exactly as loudly as before, which is what keeps this
+  fail-loud rather than fail-open the way freezing the clock would be (#30). No
+  noidroid client code may draw from a generator seeded with this value — the seed is
+  for the program's own use. (#77)
 
 ### Changed
 

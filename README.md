@@ -647,6 +647,24 @@ $ noidroid run --auto -- python3 agent.py
   depend on what the child does.
 ```
 
+Randomness is not *captured* — a call into it is still not a recorded step, and no
+value it produces is stored on the trajectory — but as of #77 it is *controlled*: the
+engine mints a `u64` seed at genesis and serves the same one back on every replay and
+branch, and `--auto`'s bootstrap seeds Python's `random` and, if it is importable,
+`numpy.random` from it before your program's own code runs:
+
+```console
+[noidroid.auto] seeded: random, numpy.random
+```
+
+That is the same move Minari and Temporal make for exactly this reason: seeding a
+generator is fail-loud where freezing a clock is fail-open — anything left unseeded
+still diverges on replay as loudly as it always did, rather than quietly returning a
+value the program never actually produced. `noidroid.Session.seed` carries the value
+for your program to seed whatever else it needs; **no noidroid client code may draw
+from a generator seeded with it** — that would make the client's own bookkeeping part
+of the sequence the program depends on.
+
 And during a replay the network is fenced: an outbound socket to anything but
 loopback is refused, because a reconstruction is supposed to serve every input from
 the recording and touch nothing. A blocked connection is not an inconvenience — it is

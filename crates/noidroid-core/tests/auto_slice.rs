@@ -653,6 +653,92 @@ fn shelling_agent(dir: &Path) -> PathBuf {
     agent
 }
 
+/// No reference to noidroid's seed anywhere -- `random` is seeded by the bootstrap
+/// before this code ever runs, not by anything the program does.
+const RANDOM_AGENT: &str = r#"
+import os
+import random
+
+import noidroid
+
+nd = noidroid.connect()
+witness = os.environ["WITNESS"]
+draws = [random.random() for _ in range(3)]
+with open(witness, "a", encoding="utf-8") as handle:
+    handle.write(f"{nd.seed}:{draws}\n")
+nd.finish("done", {})
+"#;
+
+/// #77: `sitecustomize.py` seeds `random` from the value the engine handed back on
+/// `Hello`, before the program's own code runs. The claim worth testing over the real
+/// protocol is not "the bootstrap called `random.seed`" -- it is that the *draws*
+/// come out identical on replay, because the same seed was served back rather than a
+/// fresh one minted.
+#[test]
+fn auto_capture_seeds_pythons_random_module_from_the_engines_seed() {
+    let dir = scratch("seed-auto");
+    let agent = dir.join("random_agent.py");
+    fs::write(&agent, RANDOM_AGENT).unwrap();
+    let witness = dir.join("witness.log");
+    let repo = Repo::open(&dir).unwrap();
+    let pythonpath = format!("{}:{}", bootstrap_path().display(), client_path().display());
+
+    let spec = |name: Option<&str>| RunSpec {
+        command: vec!["python3".into(), agent.display().to_string()],
+        launch_dir: dir.clone(),
+        name: name.map(str::to_string),
+        env: vec![
+            ("PYTHONPATH".into(), pythonpath.clone()),
+            ("WITNESS".into(), witness.display().to_string()),
+            // This agent uses none of the SDKs `install()` patches, but an
+            // environment with one present still reports it as an unhooked gap;
+            // allowed here because that gap is not what this test is about.
+            ("NOIDROID_ALLOW_GAPS".into(), "1".into()),
+        ],
+        auto: true,
+        watch: None,
+    };
+
+    let recorded_report = engine::run(&repo, &spec(Some("seed-record")), Mode::Record, None)
+        .expect("recording should succeed");
+    let recorded = recorded_report
+        .trajectory
+        .clone()
+        .expect("a recording produces a trajectory");
+
+    let stderr = fs::read_to_string(recorded_report.stderr_path.as_ref().unwrap()).unwrap();
+    assert!(
+        stderr.contains("[noidroid.auto] seeded: random"),
+        "the bootstrap should report seeding `random` over stderr, matching the \
+         hooked:/NOT hooked: convention: {stderr}"
+    );
+
+    let recorded_line = fs::read_to_string(&witness).unwrap();
+    fs::remove_file(&witness).unwrap();
+
+    let replayed_report = engine::run(
+        &repo,
+        &spec(None),
+        Mode::Replay { live: Vec::new() },
+        Some(&recorded),
+    )
+    .expect("replay should run to completion");
+    assert!(
+        replayed_report.faithful(),
+        "{:?}",
+        replayed_report.divergences
+    );
+
+    let replayed_line = fs::read_to_string(&witness).unwrap();
+    assert_eq!(
+        recorded_line, replayed_line,
+        "the same seed must be served back on replay, producing the same `random` \
+         draws -- not a freshly minted one"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
 fn scratch(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
         "noidroid-{tag}-{}-{}",
@@ -795,4 +881,95 @@ fn a_program_that_can_shell_out_says_so_in_its_recording() {
     );
 
     let _ = fs::remove_dir_all(&dir);
+}
+
+/// A seeded draw first, then one no seed reaches. `DRAW` picks which unseeded source.
+const SEEDED_THEN_UNSEEDED: &str = r#"
+import os
+import random
+import uuid
+
+import noidroid
+
+nd = noidroid.connect()
+nd.call("pick.seeded", lambda: {"ok": True}, args={"n": random.random()})
+draw = os.environ["DRAW"]
+value = str(uuid.uuid4()) if draw == "uuid" else os.urandom(8).hex()
+nd.call("pick.unseeded", lambda: {"ok": True}, args={"token": value})
+nd.finish("done", {})
+"#;
+
+/// #77's acceptance test, and the one that could have said no.
+///
+/// Seeding is only worth doing if it is fail-loud. `random` is seeded, so a value
+/// drawn from it has to replay faithfully. `uuid.uuid4()` and `os.urandom` read the OS
+/// and no seed reaches them, so a value drawn from either has to *still* diverge,
+/// loudly, at exactly the step that carried it. If seeding ever turned that divergence
+/// into a quietly accepted wrong value, #30's fail-open objection would apply and the
+/// seed would be a liability.
+#[test]
+fn seeding_leaves_uuid4_and_urandom_diverging_loudly_at_their_own_step() {
+    for draw in ["uuid", "urandom"] {
+        let dir = scratch(&format!("seed-loud-{draw}"));
+        let agent = dir.join("agent.py");
+        fs::write(&agent, SEEDED_THEN_UNSEEDED).unwrap();
+        let repo = Repo::open(&dir).unwrap();
+        let pythonpath = format!("{}:{}", bootstrap_path().display(), client_path().display());
+        let spec = |name: Option<&str>| RunSpec {
+            command: vec!["python3".into(), agent.display().to_string()],
+            launch_dir: dir.clone(),
+            name: name.map(str::to_string),
+            env: vec![
+                ("PYTHONPATH".into(), pythonpath.clone()),
+                ("DRAW".into(), draw.into()),
+                ("NOIDROID_ALLOW_GAPS".into(), "1".into()),
+            ],
+            auto: true,
+            watch: None,
+        };
+
+        let recorded = engine::run(&repo, &spec(Some("rec")), Mode::Record, None)
+            .expect("records")
+            .trajectory
+            .expect("a trajectory");
+        let chain = repo.chain(&recorded).unwrap();
+        let unseeded_at = chain
+            .iter()
+            .find(|(_, s)| {
+                matches!(&s.action, noidroid_core::model::Action::Call { target, .. } if target == "pick.unseeded")
+            })
+            .map(|(_, s)| s.index)
+            .expect("the unseeded call was recorded");
+
+        let report = engine::run(
+            &repo,
+            &spec(None),
+            Mode::Replay { live: Vec::new() },
+            Some(&recorded),
+        )
+        .expect("replay runs to completion");
+
+        let first = report
+            .divergences
+            .first()
+            .unwrap_or_else(|| panic!("{draw}: seeding must not make this replay faithful"));
+        assert_eq!(
+            first.index, unseeded_at,
+            "{draw}: the seeded draw replays and the divergence lands exactly on the unseeded one: {:?}",
+            report.divergences
+        );
+        assert_eq!(
+            first.kind,
+            noidroid_core::engine::DivergenceKind::KeyMismatch,
+            "{draw}: it diverges as a changed interaction, loudly: {:?}",
+            report.divergences
+        );
+        assert!(
+            first.detail.contains("token"),
+            "{draw}: and names the argument that carried it: {}",
+            first.detail
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
 }
