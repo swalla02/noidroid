@@ -165,7 +165,18 @@ class Session:
         # changed behaviour across Python versions), and most programs that connect
         # never make an async call at all.
         self._async_lock: Optional[asyncio.Lock] = None
-        self._rpc({"op": "hello", "client": f"python-{PROTOCOL_VERSION}"})
+        hello = self._rpc({"op": "hello", "client": f"python-{PROTOCOL_VERSION}"})
+        #: The `u64` the engine minted for this trajectory's own randomness, or
+        #: ``None`` if it did not send one. Freshly minted while recording; served
+        #: back unchanged while replaying or branching, so re-executing a prefix
+        #: never mints a second, disagreeing value.
+        #:
+        #: This is for *your program* to seed its own generators with. No noidroid
+        #: client code may draw from a generator seeded with this value -- doing so
+        #: would make the client's own bookkeeping part of the sequence the program's
+        #: behaviour depends on, which is the FoundationDB `debugRandom()` hazard:
+        #: one extra draw for a log line shifts every value downstream of it.
+        self.seed: Optional[int] = hello.get("seed")
 
     # -- protocol -----------------------------------------------------------
 
@@ -415,6 +426,9 @@ class _PassThrough:
 
     mode = "off"
     recording = False
+    #: No engine, so no seed. `sitecustomize.py` treats this the same as an old
+    #: engine that did not send one: nothing gets seeded, and it says so.
+    seed = None
 
     def __init__(self) -> None:
         self.workspace = os.getcwd()

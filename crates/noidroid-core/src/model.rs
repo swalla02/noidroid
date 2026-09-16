@@ -133,7 +133,17 @@ impl EffectKind {
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum Action {
     /// The root of a trajectory: the command and the world it started from.
-    Genesis { command: Vec<String> },
+    Genesis {
+        command: Vec<String>,
+        /// The `u64` the engine minted for the program's own randomness, if this
+        /// trajectory has one. `default` on read, skipped on write when absent, so an
+        /// old recording -- made before the engine issued seeds -- serialises to
+        /// exactly the bytes it already has. See `Effect::outcome` for the same
+        /// pattern, and `format_is_pinned` and
+        /// `a_genesis_without_a_seed_round_trips_to_its_old_bytes` below for the proof.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seed: Option<u64>,
+    },
     /// A mediated interaction with the world.
     Call {
         target: String,
@@ -553,6 +563,45 @@ mod tests {
         assert_eq!(STEP_VERSION, 1, "STEP_VERSION moved without this fixture");
     }
 
+    /// The genesis seed (#77) added `seed: Option<u64>` to `Action::Genesis` the same
+    /// way `Effect::outcome` was added: `default` on read, `skip_serializing_if` on
+    /// write. Byte-compatible additions do not bump `STEP_VERSION`, so an old genesis
+    /// -- recorded before this field existed -- must still round-trip to the exact
+    /// bytes it always had. Assumed, not asserted, is exactly the mistake this test
+    /// exists to catch.
+    #[test]
+    fn a_genesis_without_a_seed_round_trips_to_its_old_bytes() {
+        // What an old (pre-#77) recording's genesis actually serialised to.
+        let old_bytes = r#"{"kind":"genesis","command":["python3","agent.py"]}"#;
+
+        // Reading it back the way this version of the code reads an existing
+        // recording: the absent `seed` key defaults to `None`.
+        let action: Action = serde_json::from_str(old_bytes).expect("an old genesis parses");
+        assert_eq!(
+            action,
+            Action::Genesis {
+                command: vec!["python3".to_string(), "agent.py".to_string()],
+                seed: None,
+            }
+        );
+
+        // And it reserialises to exactly the bytes it had before, not merely
+        // equivalent ones -- an old recording's genesis must still address the same
+        // object.
+        assert_eq!(serde_json::to_string(&action).unwrap(), old_bytes);
+
+        // The addition works in the other direction too: a seed present serialises
+        // with the new field, rather than being silently dropped.
+        let with_seed = Action::Genesis {
+            command: vec!["python3".to_string(), "agent.py".to_string()],
+            seed: Some(42),
+        };
+        assert_eq!(
+            serde_json::to_string(&with_seed).unwrap(),
+            r#"{"kind":"genesis","command":["python3","agent.py"],"seed":42}"#
+        );
+    }
+
     #[test]
     fn provenance_join_is_monotone_and_conservative() {
         assert_eq!(Provenance::Real.join(Provenance::Real), Provenance::Real);
@@ -588,7 +637,10 @@ mod tests {
         let step = Step::new(
             None,
             1,
-            Action::Genesis { command: vec![] },
+            Action::Genesis {
+                command: vec![],
+                seed: None,
+            },
             vec![],
             Digest::of(b""),
             Provenance::Simulated,
@@ -603,7 +655,10 @@ mod tests {
         let step = Step::new(
             None,
             1,
-            Action::Genesis { command: vec![] },
+            Action::Genesis {
+                command: vec![],
+                seed: None,
+            },
             vec![Effect {
                 key: "k".into(),
                 value: Digest::of(b"v"),
