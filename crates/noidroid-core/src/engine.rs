@@ -1504,9 +1504,13 @@ fn describe_mismatch(
         .find(|(_, (_, step))| actions_agree(&step.action, incoming))
         .map(|(i, _)| i)
     {
+        // "Removed" is only one reading. A reorder produces exactly the same mismatch —
+        // the incoming call is recorded a little later — and the run stops here, so
+        // the call that should have been at this position is never seen again. One
+        // mismatch cannot tell the two apart, so the message names both (#78).
         lines.push(format!(
-            "this call is recorded at step {found}; it looks like {} interaction(s) \
-             were removed",
+            "this call is recorded at step {found}; {} interaction(s) before it were \
+             removed, or moved later",
             found as u64 - index
         ));
     } else if chain
@@ -1762,4 +1766,50 @@ fn mint_seed() -> u64 {
     );
     let digest = blake3::hash(mixed.as_bytes());
     u64::from_le_bytes(digest.as_bytes()[..8].try_into().expect("8 bytes"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn call(target: &str) -> Action {
+        Action::Call {
+            target: target.into(),
+            args: json!({}),
+            effect: EffectKind::Read,
+        }
+    }
+
+    fn chain(actions: Vec<Action>) -> Vec<(Digest, Step)> {
+        actions
+            .into_iter()
+            .enumerate()
+            .map(|(i, action)| {
+                let step = Step::new(
+                    None,
+                    i as u64,
+                    action,
+                    Vec::new(),
+                    Digest::of(b""),
+                    Provenance::Real,
+                    Provenance::Real,
+                    None,
+                );
+                (Digest::of(format!("{i}").as_bytes()), step)
+            })
+            .collect()
+    }
+
+    /// A call that is recorded one step later is either the other side of a removal
+    /// or of a reorder, and the run stops before anything could tell them apart. The
+    /// report used to say "removed" (#78), which is wrong for every swap.
+    #[test]
+    fn a_call_recorded_later_is_named_as_removed_or_moved_not_only_removed() {
+        let recorded = chain(vec![call("a"), call("b"), call("c")]);
+        let detail = describe_mismatch(&call("b"), &call("c"), &recorded, 1);
+        assert!(
+            detail.contains("recorded at step 2") && detail.contains("removed, or moved later"),
+            "{detail}"
+        );
+    }
 }

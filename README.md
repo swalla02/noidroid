@@ -842,6 +842,12 @@ along the chain so it can never improve downstream. *Delivery* is how this run g
 value — `executed`, `replayed`, `intervened`, `denied` — and is deliberately not
 hashed, so a faithful replay produces the same objects as the run it reproduces.
 
+**What you can edit and still replay is measured, not assumed.**
+[`docs/replay-safety.md`](docs/replay-safety.md) makes five ordinary edits one at a time
+against the reference agent's recording (add an option, rename a call, reorder two
+calls, change an argument, add a call) and records where `noidroid replay` says each
+one diverged.
+
 **Irreversible effects fail safe.** Declaring an effect `irreversible` means it is
 performed only during an original recording. Every replay and every branch refuses it
 unless you explicitly supply a stated-simulated value, which then poisons the

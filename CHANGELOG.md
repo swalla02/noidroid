@@ -29,6 +29,15 @@ how the package version relates to `STEP_VERSION`, the on-disk object format.
   nothing about tasks. It says in words whether the checker saw the whole recorded state
   or only the workspace, because a declared world's fingerprint cannot be materialised.
   (#65)
+- **`docs/replay-safety.md`: what you can edit and still replay, measured rather than
+  assumed.** Five ordinary edits were applied one at a time to the reference agent and
+  replayed against the same recording: add a decision option, rename a call, reorder two
+  calls, change an argument, add a call. All five diverged as `key_mismatch` at the exact
+  step the edit took effect, with a field diff that named it. The positional, strict
+  comparison in `actions_agree` is kept on evidence, not inheritance. The one wording
+  error it found is fixed: a reorder was reported as "interaction(s) were removed", and
+  now reads "removed, or moved later", because a single mismatch cannot tell the two
+  apart. (#78)
 - **An OpenEnv adapter — `state()` becomes a declared, witnessed world.** OpenEnv
   (github.com/meta-pytorch/OpenEnv) standardises RL and agentic environments on three
   methods: `reset()`, `step(action)`, `state()`. `noidroid.openenv.OpenEnvAdapter`
