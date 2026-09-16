@@ -274,6 +274,16 @@ def _wrap_request(client_cls: Any, provider: str) -> None:
     original = client_cls.request
 
     def mediated(self, *args, **kwargs):
+        # A streaming request returns the SDK's `Stream`, not a value. It cannot be
+        # serialised, so without this it reached the RPC layer and surfaced as an
+        # unrelated error from deep inside the SDK (#99). Refused here, by name, the
+        # same way the async wrapper refuses it.
+        if kwargs.get("stream", False):
+            raise NoidroidError(
+                f"{provider} streaming is not recorded by --auto: only non-streaming "
+                f"calls are mediated. Avoid stream()/create(..., stream=True) while "
+                f"recording."
+            )
         options = kwargs.get("options")
         if options is None:
             options = next((a for a in args if hasattr(a, "url")), None)
