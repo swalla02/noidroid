@@ -5,15 +5,20 @@
 #
 # The release workflow used to answer this by running `cargo test --all` a second
 # time. That re-run was weaker than CI -- one Linux runner, no macOS job, no
-# no-browser job, no example job -- and it was the flakiest part of the release
-# path: v0.2.0 timed out after six hours in the Playwright install, and v0.3.0
-# failed on a browser test that CI had already passed on the same commit. Neither
-# tag ever produced an artifact, and the commit's real problem (a red macOS job)
-# went unexamined.
+# no-browser job, no example job -- and slow enough to hang: v0.2.0 timed out after
+# six hours in the Playwright install.
 #
-# So this does not re-run anything. It checks the three things the workflow's own
-# header comment has always claimed: the tag matches the declared version, the
-# commit is on main, and CI was green for that exact commit.
+# v0.3.0 is the case that shaped this script, and the lesson is the reverse of the
+# obvious one. Its re-run failed three browser tests, and CI looked green on the
+# same commit -- but CI was lying. `cargo test | tee` ran without pipefail, so the
+# browser job reported tee's exit status, and the tests had genuinely failed there
+# too (#109). The re-run was the only honest check in the pipeline.
+#
+# So this does not re-run anything, and it is only safe because CI now reports what
+# ran: a gate that trusts check-runs is exactly as good as the checks it trusts. It
+# checks the three things the workflow's own header comment has always claimed: the
+# tag matches the declared version, the commit is on main, and CI was green for that
+# exact commit.
 #
 # Environment:
 #   GITHUB_REF_NAME     the tag being released, `vX.Y.Z`
