@@ -411,3 +411,92 @@ fn the_counterfactual_world_is_re_driven_rather_than_assumed() {
     assert_eq!(flips(1, "insert", "b1"), "failure");
     assert_eq!(flips(2, "insert", "b2"), "success");
 }
+
+/// A witnessed world whose adapter also keeps files in the workspace — which is what
+/// the browser adapter does, and what the reactor above does not.
+///
+/// During reconstruction the `write` is not re-performed, so the file is missing, so
+/// the workspace has to be restored before the step can match. After that restore the
+/// situation hashes to exactly the recorded address. The engine used to report a
+/// divergence there anyway — "hashes to X but the recording says X" — which made every
+/// branch of every browser recording unreachable. This is the case, without a browser,
+/// so it fails on every CI job rather than only the one that installs Chromium.
+const LOGGING_AGENT: &str = r#"
+import noidroid
+
+nd = noidroid.connect()
+state = {"page": "/start"}
+
+def navigate(url):
+    # The adapter's own log, in the workspace, exactly as the browser adapter keeps one.
+    with open("actions.jsonl", "a", encoding="utf-8") as handle:
+        handle.write(url + "\n")
+    state["page"] = url
+    nd.observe("page", {"url": url})
+    return {"url": url}
+
+nd.call("page.goto", lambda: navigate("/results"), args={"url": "/results"}, effect="write")
+choice = nd.decide("pick", options=["a", "b"], choice="a")
+nd.call("page.goto", lambda: navigate("/" + choice), args={"url": "/" + choice}, effect="write")
+nd.finish("failure" if choice == "a" else "success", {"chose": choice})
+"#;
+
+#[test]
+fn restoring_the_workspace_under_a_witnessed_world_is_not_a_divergence() {
+    let f = Fixture::new("logging");
+    let agent = f.dir.join("logging_agent.py");
+    fs::write(&agent, LOGGING_AGENT).unwrap();
+    let spec = |name: Option<&str>| {
+        let mut spec = f.spec(name, false);
+        spec.command = vec!["python3".into(), agent.display().to_string()];
+        spec
+    };
+
+    let parent = engine::run(&f.repo, &spec(Some("web")), Mode::Record, None)
+        .expect("records")
+        .trajectory
+        .expect("a trajectory");
+    assert_eq!(parent.worlds[0].grip, Grip::Witnessed);
+
+    let replay = engine::run(
+        &f.repo,
+        &spec(None),
+        Mode::Replay { live: Vec::new() },
+        Some(&parent),
+    )
+    .expect("replay runs to completion");
+    assert!(
+        replay.faithful(),
+        "a restore that lands on the recorded address is a restore, not a divergence: {:?}",
+        replay.divergences
+    );
+    assert!(replay.state_restored > 0, "and it is counted as one");
+
+    let at = f
+        .repo
+        .chain(&parent)
+        .unwrap()
+        .iter()
+        .find(|(_, s)| matches!(s.action, noidroid_core::model::Action::Decide { .. }))
+        .map(|(_, s)| s.index)
+        .expect("the agent declares a decision");
+    let report = engine::run(
+        &f.repo,
+        &spec(Some("web-b")),
+        Mode::Branch {
+            at,
+            intervention: Intervention::ReplaceDecision {
+                name: "pick".into(),
+                value: serde_json::json!("b"),
+            },
+            simulate: Default::default(),
+        },
+        Some(&parent),
+    )
+    .expect("the branch runs");
+    assert!(report.divergences.is_empty(), "{:?}", report.divergences);
+    let branch = report
+        .trajectory
+        .expect("the checkpoint is reachable, so the branch is written down");
+    assert_eq!(branch.outcome.status, "success");
+}

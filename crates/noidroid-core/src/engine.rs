@@ -1196,7 +1196,14 @@ impl<'a> Session<'a> {
                     // the address of the page the recording saw. Look again instead,
                     // and record what is actually there.
                     let after = self.env.observe(&self.repo.store)?;
-                    if matches!(self.phase(), Phase::Reconstructing | Phase::Diverging) {
+                    if after.root == rec.state_root {
+                        // The part we own went back and the rest was already where
+                        // the recording says. That took a restore to reach, so it is
+                        // counted as one -- but it is not a divergence, and reporting
+                        // it as one made every branch of a browser recording
+                        // unreachable (#109).
+                        self.report.state_restored += 1;
+                    } else if matches!(self.phase(), Phase::Reconstructing | Phase::Diverging) {
                         self.report.divergences.push(Divergence {
                             index: self.index,
                             kind: DivergenceKind::StateMismatch,

@@ -57,7 +57,13 @@ jobs:
             python -m playwright install --with-deps chromium
           fi
       - name: Run every test, including the ones that drive a real browser
-        run: cargo test --all --verbose -- --nocapture 2>&1 | tee test-output.txt
+        # `pipefail`, or the step's status is `tee`'s, which is always 0. Without it the
+        # browser tests failed on every run from 0.3.0 onward and this job stayed green
+        # (#109): the next step only looks for a skip, so a failure passed as long as it
+        # was not one.
+        run: |
+          set -o pipefail
+          cargo test --all --verbose -- --nocapture 2>&1 | tee test-output.txt
       - name: Fail if the browser tests silently skipped
         # The browser tests pass when Chromium is missing, by design. On this job it
         # is present, so a skip here would mean the suite is quietly not running.
