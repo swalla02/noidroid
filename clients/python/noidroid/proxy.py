@@ -42,9 +42,12 @@ content coding is refused elsewhere: inflating a stream incrementally without
 disturbing the schedule the passthrough exists to preserve is a second mechanism this
 proxy does not have.
 
-The engine hears about a call only once it completes, so a passed-through stream is
-recorded after its last byte has already reached the agent. That is fine for a
-recording; it would have to be reconsidered if a replay ever streamed.
+The engine hears about a call only once it completes, so the last chunk and the
+stream's terminator are held back until the step is committed. An agent that sees its
+stream end and immediately writes a file, or exits, would otherwise race the commit:
+the write would land in whichever step won, and an exit could lose the step outright
+(#122). Each chunk therefore reaches the agent one chunk late, never a whole response
+late.
 
 No TLS interception. The agent is pointed at a plain local address and the proxy makes
 the upstream call itself, so nothing has to trust a forged certificate.
@@ -59,6 +62,7 @@ import socket
 import subprocess
 import sys
 import threading
+import time
 import urllib.error
 import urllib.request
 import zlib
@@ -240,8 +244,14 @@ class _Handler(BaseHTTPRequestHandler):
                                 "passes streams through untouched and will not record "
                                 "bytes it cannot read"
                             )
-                        payload = self._pass_through(status, got, response)
-                        passed_through.append(True)
+                        payload, finish = self._pass_through(status, got, response)
+                        passed_through.append(finish)
+                        # Test hook: widen the gap between the stream ending upstream
+                        # and the step being committed, so the ordering #122 fixed is
+                        # exercised deterministically rather than by scheduling luck.
+                        delay = os.environ.get("NOIDROID_PROXY_COMMIT_DELAY")
+                        if delay:
+                            time.sleep(float(delay))
                     else:
                         payload = _inflate(response.read(), got)
             except urllib.error.HTTPError as failure:
@@ -270,9 +280,13 @@ class _Handler(BaseHTTPRequestHandler):
             # The engine already has this as a failed step, with the reason. All that
             # is left is to tell the agent, unless the stream beat us to the socket.
             return self._refuse(refusal, answered=bool(passed_through))
+        finally:
+            # The step is committed (or refused) by now, so the agent may see the end.
+            for finish in passed_through:
+                finish()
 
         if passed_through:
-            return  # the agent already has every byte of it
+            return  # the agent now has every byte of it
 
         payload = (recorded.get("body") or "").encode("utf-8")
         self.send_response(int(recorded.get("status", 200)))
@@ -299,12 +313,20 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
-    def _pass_through(self, status: int, headers: dict, response) -> bytes:
-        """Relay a stream while it is still running, and return all of what went by.
+    def _pass_through(self, status: int, headers: dict, response):
+        """Relay a stream while it is still running, except its end.
 
         Chunked, because the length of a generation is not known until it ends, and
         the whole point is to not wait for that. Flushed after every write: a chunk
         sitting in our buffer is the same delay we are removing.
+
+        Returns everything that went by, and a `finish` that sends the rest. Each chunk
+        goes out when the *next* one arrives, so the last chunk and the terminator are
+        still in hand when upstream closes. The caller sends them only after the engine
+        has committed the step (#122). Otherwise the agent sees the end of the stream
+        first, and whatever it does next -- write a file, exit -- races the commit: the
+        write lands in the wrong step, or the step is never recorded at all. The cost
+        is one chunk of latency, never the whole response.
         """
         self.send_response(status)
         for key, value in headers.items():
@@ -314,6 +336,7 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
         seen = []
+        held = None
         while True:
             # read1, so a chunk goes out when it arrives rather than when enough of
             # them have arrived to fill a buffer.
@@ -321,11 +344,21 @@ class _Handler(BaseHTTPRequestHandler):
             if not chunk:
                 break
             seen.append(chunk)
-            self.wfile.write(b"%X\r\n" % len(chunk) + chunk + b"\r\n")
+            if held is not None:
+                self._write_chunk(held)
+            held = chunk
+
+        def finish():
+            if held is not None:
+                self._write_chunk(held)
+            self.wfile.write(b"0\r\n\r\n")
             self.wfile.flush()
-        self.wfile.write(b"0\r\n\r\n")
+
+        return b"".join(seen), finish
+
+    def _write_chunk(self, chunk: bytes) -> None:
+        self.wfile.write(b"%X\r\n" % len(chunk) + chunk + b"\r\n")
         self.wfile.flush()
-        return b"".join(seen)
 
     # Anthropic and OpenAI between them use more than two verbs — files and batches
     # are deleted, assistants are patched. An unhandled method would 501 here, which

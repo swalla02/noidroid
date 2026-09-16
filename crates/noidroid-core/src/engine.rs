@@ -17,7 +17,7 @@
 //! and nothing about the old behaviour changes; where it is not -- a browser page, a
 //! simulator, a reactor -- the weaker answer is recorded rather than rounded up.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
@@ -147,6 +147,10 @@ pub struct Report {
     /// verdict, and a reconstruction that re-derives a mangled body reproduces it
     /// perfectly. See [`crate::intact`].
     pub unreadable: Vec<intact::Finding>,
+    /// Declared worlds this run acted on and was handed the recorded observation for,
+    /// because the adapter said nothing about them. Naming them is the difference
+    /// between "something here is unproven" and a reader knowing what to go and fix.
+    pub served: BTreeSet<String>,
     pub divergences: Vec<Divergence>,
     pub provenance: BTreeMap<&'static str, u64>,
     pub delivery: BTreeMap<&'static str, u64>,
@@ -491,13 +495,15 @@ impl<'a> Session<'a> {
     fn handle(&mut self, request: Request) -> Result<Response> {
         match request {
             Request::Hello { .. } => {
+                let seed = self.genesis_seed();
                 let action = Action::Genesis {
                     command: self.command.clone(),
+                    seed,
                 };
                 let delivery = self.delivery_now();
                 self.commit(action, Vec::new(), Provenance::Real, None, delivery, false)?;
                 self.genesis = self.parent.clone();
-                Ok(Response::ack())
+                Ok(Response::hello(seed))
             }
             Request::Call {
                 target,
@@ -610,6 +616,25 @@ impl<'a> Session<'a> {
 
     fn recorded_step(&self) -> Option<&Step> {
         self.recorded.get(self.index as usize).map(|(_, s)| s)
+    }
+
+    /// The seed genesis carries. Minted fresh while recording -- the one and only
+    /// place a seed is ever minted, so a branch re-executing the prefix cannot mint a
+    /// second one and disagree with the recording it shares. Read back from the
+    /// recorded genesis (always step 0) while replaying or branching, exactly like
+    /// any other recorded input.
+    fn genesis_seed(&self) -> Option<u64> {
+        match self.mode {
+            Mode::Record => Some(mint_seed()),
+            Mode::Replay { .. } | Mode::Branch { .. } => {
+                self.recorded
+                    .first()
+                    .and_then(|(_, step)| match &step.action {
+                        Action::Genesis { seed, .. } => *seed,
+                        _ => None,
+                    })
+            }
+        }
     }
 
     /// In every reconstructing phase the application must ask for exactly what it
@@ -1173,7 +1198,25 @@ impl<'a> Session<'a> {
             }
         }
         let observed = self.env.observe(&self.repo.store)?;
-        self.report.grip = self.report.grip.join(observed.grip);
+        // The step carries the grip the recording holds; the run carries the grip it
+        // earned, and they part company on exactly one case: the program really acted
+        // on the world and then said nothing about it, so the engine handed it the
+        // recorded fingerprint and the address matched by construction. That is a
+        // world nobody re-drove wearing the word for a world that was checked.
+        //
+        // Gated on `Executed` because a step that performed nothing claims nothing. A
+        // reconstruction is served every input by design -- that is the recorded-input
+        // oracle, not a missing check -- and degrading it here would make every branch
+        // opaque for the whole of its replayed prefix, which says nothing about the
+        // adapter and drowns the case that does.
+        let earned = match delivery {
+            Delivery::Executed => {
+                self.report.served.extend(self.env.served());
+                self.env.achieved()
+            }
+            _ => observed.grip,
+        };
+        self.report.grip = self.report.grip.join(earned);
 
         let state_root = match (&expected, suppressed_side_effect) {
             // The mediated effect that produced this state was deliberately not
@@ -1461,9 +1504,13 @@ fn describe_mismatch(
         .find(|(_, (_, step))| actions_agree(&step.action, incoming))
         .map(|(i, _)| i)
     {
+        // "Removed" is only one reading. A reorder produces exactly the same mismatch —
+        // the incoming call is recorded a little later — and the run stops here, so
+        // the call that should have been at this position is never seen again. One
+        // mismatch cannot tell the two apart, so the message names both (#78).
         lines.push(format!(
-            "this call is recorded at step {found}; it looks like {} interaction(s) \
-             were removed",
+            "this call is recorded at step {found}; {} interaction(s) before it were \
+             removed, or moved later",
             found as u64 - index
         ));
     } else if chain
@@ -1698,4 +1745,71 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+/// A fresh `u64` for `Mode::Record` to hand the program as its one source of
+/// controlled randomness. Mixed from the process id, a nanosecond timestamp and a
+/// counter -- the same ingredients `unique_socket_path` mixes, for the same reason:
+/// good enough not to collide within a run, not a cryptographic claim, and never
+/// minted more than once per trajectory since only genesis calls this.
+fn mint_seed() -> u64 {
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let mixed = format!(
+        "{}-{}-{}",
+        std::process::id(),
+        nanos,
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    );
+    let digest = blake3::hash(mixed.as_bytes());
+    u64::from_le_bytes(digest.as_bytes()[..8].try_into().expect("8 bytes"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn call(target: &str) -> Action {
+        Action::Call {
+            target: target.into(),
+            args: json!({}),
+            effect: EffectKind::Read,
+        }
+    }
+
+    fn chain(actions: Vec<Action>) -> Vec<(Digest, Step)> {
+        actions
+            .into_iter()
+            .enumerate()
+            .map(|(i, action)| {
+                let step = Step::new(
+                    None,
+                    i as u64,
+                    action,
+                    Vec::new(),
+                    Digest::of(b""),
+                    Provenance::Real,
+                    Provenance::Real,
+                    None,
+                );
+                (Digest::of(format!("{i}").as_bytes()), step)
+            })
+            .collect()
+    }
+
+    /// A call that is recorded one step later is either the other side of a removal
+    /// or of a reorder, and the run stops before anything could tell them apart. The
+    /// report used to say "removed" (#78), which is wrong for every swap.
+    #[test]
+    fn a_call_recorded_later_is_named_as_removed_or_moved_not_only_removed() {
+        let recorded = chain(vec![call("a"), call("b"), call("c")]);
+        let detail = describe_mismatch(&call("b"), &call("c"), &recorded, 1);
+        assert!(
+            detail.contains("recorded at step 2") && detail.contains("removed, or moved later"),
+            "{detail}"
+        );
+    }
 }

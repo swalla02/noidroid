@@ -49,6 +49,43 @@ if os.environ.get("NOIDROID_SOCKET") and not os.environ.get("_NOIDROID_BOOTSTRAP
             # explanation is the entire point of refusing.
             sys.stderr.flush()
             os._exit(2)
+
+        # The seed is genesis's, not auto capture's, but this is the last moment
+        # before the program's own code runs that anything can be seeded with it --
+        # the same reasoning that puts the SDK patches here rather than later.
+        #
+        # This client must never draw from a generator seeded with this value: the
+        # seed is for the program's own use, not the client's internals. See the
+        # docstring on `noidroid.Session.seed`.
+        from noidroid import connect
+
+        session = connect()
+        seeded: list = []
+        skipped: list = []
+        if session.seed is None:
+            skipped.append("random, numpy.random (the engine sent no seed)")
+        else:
+            import random
+
+            random.seed(session.seed)
+            seeded.append("random")
+            try:
+                import numpy
+            except ImportError:
+                skipped.append("numpy.random (numpy is not installed)")
+            else:
+                # numpy's legacy seed() takes an unsigned 32-bit int; the engine's
+                # seed is a full u64. Truncating it is a library-compatibility detail
+                # of applying the one seed we were given, not a second source of
+                # randomness -- `random.seed` above gets the value untouched.
+                numpy.random.seed(session.seed % (2**32))
+                seeded.append("numpy.random")
+        print(
+            f"[noidroid.auto] seeded: {', '.join(seeded) if seeded else 'nothing'}",
+            file=sys.stderr,
+        )
+        for missing in skipped:
+            print(f"[noidroid.auto] NOT seeded: {missing}", file=sys.stderr)
     except Exception as exc:  # noqa: BLE001
         # Loud, because a recording that silently missed the model calls looks real.
         print(f"[noidroid.auto] could not install automatic capture: {exc}", file=sys.stderr)

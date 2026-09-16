@@ -116,6 +116,11 @@ pub struct Response {
     pub error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub kind: Option<&'static str>,
+    /// The `u64` the engine minted for the program's own randomness, only ever set on
+    /// the reply to `Hello` -- freshly minted while recording, served back unchanged
+    /// while replaying or branching. See `Action::Genesis` in `model.rs`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seed: Option<u64>,
 }
 
 impl Response {
@@ -129,11 +134,20 @@ impl Response {
             reason: None,
             error: None,
             kind: None,
+            seed: None,
         }
     }
 
     pub fn ack() -> Response {
         Response::base(true)
+    }
+
+    /// The reply to `Hello`.
+    pub fn hello(seed: Option<u64>) -> Response {
+        Response {
+            seed,
+            ..Response::base(true)
+        }
     }
 
     /// "Go ahead and really do it, then tell me what happened."

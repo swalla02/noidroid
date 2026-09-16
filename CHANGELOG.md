@@ -9,6 +9,52 @@ how the package version relates to `STEP_VERSION`, the on-disk object format.
 
 ### Added
 
+- **What a branch costs, measured.** `examples/branch_depth_bench.rs` times branching at
+  depth k on the reference reactor and on real Chromium. It is a fixed ~160 ms (mostly
+  starting Python) plus about 0.6 ms per re-derived step, linear. That is above
+  AgentENV's sub-50 ms resume at every depth and below BPO's 1,920 ms snapshot until
+  roughly k≈3,000. Numbers and caveats in `docs/branch-cost.md`. (#63)
+- **`noidroid log --irreversible <trajectory>`** lists every irreversible effect in the
+  trajectory's family: its root and every branch at any depth. An effect in a shared
+  prefix is one effect, listed once under the trajectory that recorded it. Each says
+  whether it was `performed`, `denied`, or `simulated, never run`, because a
+  `--simulate`d effect carries a value nobody produced. Read-only; it stores and blocks
+  nothing. (#92)
+- **`replay --live` names a model call that continues a server-side session.** A live
+  call carrying `previous_response_id` or `conversation` asks the provider to continue
+  a session whose earlier turns were served from the recording and never sent. The
+  replay now prints the step and the field. The model provider is also a row in the
+  environment model's conformance table: no world when a request is self-contained,
+  an `opaque` one when it names a session. (#91)
+- **`--auto` captures async SDK clients.** `await client.messages.create(...)` on
+  `AsyncAnthropic` or `AsyncOpenAI` now records and replays like the sync call. An agent
+  that merely imported an async client used to be refused outright. Socket I/O with the
+  engine moves to a worker thread, so a call in flight never stalls the event loop, and
+  concurrent calls queue on an `asyncio.Lock` in the order asyncio dispatched them. Step
+  order is therefore identical on every run, independent of which response came back
+  first. The cost is stated rather than hidden: an `asyncio.gather` of provider calls is
+  serialised while it is recorded. Streaming, sync or async, is still not captured. An
+  async streaming call is refused by name at the call site, not handed to a serialiser
+  that fails somewhere else. Programs written by hand get the same thing as
+  `Session.acall`. (#33)
+- **`noidroid score <trajectory> --at <step> -- <command>` re-runs a checker against
+  a step's recorded state, offline.** It materialises the step's `state_root` into a
+  scratch directory, runs the command there, and prints a citable tuple: step address,
+  state root, command, exit status and grip. A reward function or a test can change
+  and be re-scored without regenerating the episode, because the state it needs was
+  addressed the day the step was recorded. It stores nothing, judges nothing and knows
+  nothing about tasks. It says in words whether the checker saw the whole recorded state
+  or only the workspace, because a declared world's fingerprint cannot be materialised.
+  (#65)
+- **`docs/replay-safety.md`: what you can edit and still replay, measured rather than
+  assumed.** Five ordinary edits were applied one at a time to the reference agent and
+  replayed against the same recording: add a decision option, rename a call, reorder two
+  calls, change an argument, add a call. All five diverged as `key_mismatch` at the exact
+  step the edit took effect, with a field diff that named it. The positional, strict
+  comparison in `actions_agree` is kept on evidence, not inheritance. The one wording
+  error it found is fixed: a reorder was reported as "interaction(s) were removed", and
+  now reads "removed, or moved later", because a single mismatch cannot tell the two
+  apart. (#78)
 - **An OpenEnv adapter — `state()` becomes a declared, witnessed world.** OpenEnv
   (github.com/meta-pytorch/OpenEnv) standardises RL and agentic environments on three
   methods: `reset()`, `step(action)`, `state()`. `noidroid.openenv.OpenEnvAdapter`
@@ -26,6 +72,19 @@ how the package version relates to `STEP_VERSION`, the on-disk object format.
   stand-in rather than a real environment — `state()`'s stability across real
   environments from the ecosystem remains unverified and is the kill criterion this
   adapter was built to test. (#66)
+- **`noidroid sweep` — try every named failure against every recorded call.**
+  `--inject <kind>` (#60) branches one call at a time, and `bisect` sweeps every
+  recorded *decision*. `sweep` covers the other axis: every recorded call, crossed with
+  all six named failures. Its words depend on the kind of failure. A raised failure
+  that the run catches and still succeeds through is **survived**, which is handling.
+  A success that stands on an `empty` or `malformed` answer is **absorbed**, which is
+  the finding. Either the agent handled that answer or it never looked, and the printed
+  `noidroid diff` shows which. A run that did not succeed cannot show absorption, and
+  says so. Every probe runs, probes from an earlier sweep are read back rather than
+  silently skipped, and the exit code is non-zero only when something was absorbed, so
+  a well-built agent is never failed in CI for its retries. It is a separate command
+  rather than a `bisect` flag because the two disagree on what "nothing changed"
+  means. (#59)
 - **`noidroid doctor` — what a recording would and would not cover, before one is
   made.** Automatic capture fails open by construction: every patching mechanism can
   miss a surface, and a recording that missed one still looks real. `--auto` already
@@ -102,6 +161,24 @@ how the package version relates to `STEP_VERSION`, the on-disk object format.
   about the source, not a prediction about what will happen: the value it reads may
   never reach a call argument or the workspace, so a replay may never diverge because
   of it, and the wording says exactly that much. (#71)
+- **The engine mints a seed at genesis; `--auto` uses it to seed `random` and
+  `numpy.random`.** Randomness was neither captured nor controlled: an unmediated
+  `random.random()` or `numpy` draw simply diverged on replay, with no explanation.
+  The fix follows Temporal and FoundationDB, not Minari — the *engine* mints the `u64`
+  at genesis, not the client, because a client-minted seed would mint a second,
+  disagreeing one on every branch that re-executes the prefix. Recorded on
+  `Action::Genesis { seed: Option<u64> }`, handed back over the wire on `Hello`'s
+  reply, and served from the recording — never re-minted — on replay and branch.
+  `--auto`'s bootstrap seeds Python's `random` and, if it is importable, `numpy.random`
+  from it before the program's own code runs, and reports which it seeded the same way
+  it reports what it hooked. This is a byte-compatible addition — `default` on read,
+  skipped on write when absent, the same pattern `Effect::outcome` used — so an old
+  recording's genesis reserialises to the exact bytes it always had and
+  `STEP_VERSION` does not move. Seeding is deliberately not capture: an unseeded
+  source still diverges exactly as loudly as before, which is what keeps this
+  fail-loud rather than fail-open the way freezing the clock would be (#30). No
+  noidroid client code may draw from a generator seeded with this value — the seed is
+  for the program's own use. (#77)
 
 ### Changed
 
@@ -148,6 +225,19 @@ how the package version relates to `STEP_VERSION`, the on-disk object format.
 
 ### Fixed
 
+- **A proxied stream's end raced its own recording.** Since streams are passed through
+  as they arrive, an agent could see the end of a response before the proxy committed
+  its step. A file the agent wrote next landed in whichever step won, which made a
+  faithful replay report a `state_mismatch` now and then. If the agent exited straight
+  away, the step was never recorded at all. The last chunk and the terminator are now
+  held until the step is committed, which costs one chunk of latency. A test-only delay
+  makes the ordering deterministic, so the test fails every time without the fix, where
+  the race had shown up only as an occasional CI failure. (#122)
+- **A sync streaming call under `--auto` crashed with an unrelated error instead of
+  being refused.** `client.messages.stream()` handed the SDK's `Stream` object to a
+  serialiser that could not take it, and what surfaced was an `AttributeError` from
+  deep inside the SDK. The sync wrapper now refuses a streaming request by name, the
+  same way the async one does. (#99)
 - **`Store`'s and `tree`'s own unit-test `tmp()` helpers still named scratch
   directories from pid and `SystemTime::now()` alone, with no counter.** #44 gave
   `Store::put`'s scratch name and `watch_slice`'s fixture directory a `SEQ:
@@ -290,6 +380,17 @@ how the package version relates to `STEP_VERSION`, the on-disk object format.
   silent egress the fence exists to catch. Without this, `--live` would have been
   fenced out of the one call it exists to make, and CI would not have noticed:
   its stand-in is on loopback, which was allowed all along. (#46)
+- **What a fingerprint comparison is worth, settled.** Run grip and trajectory grip
+  are named apart (`docs/environment-model.md` §14). A replay of a trajectory with a
+  declared world now says, beside "faithful", that the world was served from the
+  recording and not re-driven: the replay verified the program, not the world. The
+  trajectory's own evidence is untouched, and run grip is never printed as a bare word.
+  §14 also states the floor: the engine can tell whether a program said anything new
+  about its world, never whether it was true. The browser adapter gets the same proof
+  the reference environment has for its re-drive. `NOIDROID_BROWSER_MUTE=1` skips
+  `Browser._reconstruct`, and `the_counterfactual_browser_is_re_driven_rather_than_assumed`
+  shows a muted branch reads `about:blank` where the re-driven one reproduces the
+  recorded page exactly. (#53)
 
 ## [0.3.0] - 2026-08-19
 

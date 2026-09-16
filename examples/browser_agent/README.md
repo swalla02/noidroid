@@ -61,6 +61,23 @@ A different outcome, and an honest account of what it rests on: two values from 
 original recording, five really fetched now in a counterfactual world, one made up by
 the operator.
 
+## Proving the re-drive matters
+
+`_reconstruct` is not decoration — it is what makes `page state verified` in the
+transcript above a checked claim rather than an assumed one. `NOIDROID_BROWSER_MUTE=1`
+skips it, for testing:
+
+```bash
+NOIDROID_BROWSER_MUTE=1 \
+  noidroid branch web-1@3 --decide pick_flight=FL-203 --label web-blind
+```
+
+With the re-drive skipped, the fresh browser is left on `about:blank` instead of the
+reconstructed page, and anything read from it before the next `goto` reflects that
+instead of the recording. `the_counterfactual_browser_is_re_driven_rather_than_assumed`
+in `crates/noidroid-core/tests/browser_slice.rs` runs the same branch both ways and
+checks that the report differs — see `docs/environment-model.md` §14.5.
+
 ## What this does and does not establish
 
 - The browser's state is **re-derived, not restored**: recorded actions are re-driven

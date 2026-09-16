@@ -2,6 +2,7 @@
 //! have happened instead.
 
 use std::collections::BTreeMap;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -15,7 +16,7 @@ use noidroid_core::engine::{self, Mode, Report, RunSpec};
 use noidroid_core::intact::{self, Reading};
 use noidroid_core::model::{Action, Failure, Intervention, Provenance, Step, Trajectory};
 use noidroid_core::repo::{self, Repo};
-use noidroid_core::{tree, Error, Result};
+use noidroid_core::{tree, Doing, Error, Result};
 
 mod doctor;
 mod palette;
@@ -72,6 +73,10 @@ enum Command {
     Log {
         /// Trajectory name. Omit to list everything.
         trajectory: Option<String>,
+        /// List every irreversible effect anywhere in this trajectory's family of
+        /// branches, once each, and whether it was performed, simulated or denied.
+        #[arg(long, requires = "trajectory")]
+        irreversible: bool,
     },
     /// Inspect a checkpoint: what is known there, and how to explore from it.
     Show {
@@ -136,6 +141,17 @@ enum Command {
         address: String,
         directory: PathBuf,
     },
+    /// Re-run a checker against a step's recorded state, offline.
+    Score {
+        /// The trajectory to score.
+        trajectory: String,
+        /// The step whose state to materialise.
+        #[arg(long)]
+        at: u64,
+        /// The checker to run, after `--`.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
+        command: Vec<String>,
+    },
     /// Find which decision, changed, would have flipped the outcome.
     Bisect {
         /// The trajectory to explain.
@@ -146,6 +162,14 @@ enum Command {
         /// Stop after the first decision that flips it.
         #[arg(long)]
         first: bool,
+        /// Stated-simulated value for an irreversible effect, as for `branch`.
+        #[arg(long, value_name = "TARGET=JSON")]
+        simulate: Vec<String>,
+    },
+    /// Try every named failure against every recorded call.
+    Sweep {
+        /// The trajectory to probe.
+        trajectory: String,
         /// Stated-simulated value for an irreversible effect, as for `branch`.
         #[arg(long, value_name = "TARGET=JSON")]
         simulate: Vec<String>,
@@ -257,7 +281,11 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
             },
             command,
         ),
-        Command::Log { trajectory } => cmd_log(&repo, trajectory),
+        Command::Log {
+            trajectory: Some(name),
+            irreversible: true,
+        } => cmd_irreversible(&repo, &name),
+        Command::Log { trajectory, .. } => cmd_log(&repo, trajectory),
         Command::Show { reference } => cmd_show(&repo, &reference),
         Command::Replay {
             trajectory,
@@ -294,12 +322,21 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
             );
             Ok(ExitCode::SUCCESS)
         }
+        Command::Score {
+            trajectory,
+            at,
+            command,
+        } => cmd_score(&repo, &trajectory, at, command),
         Command::Bisect {
             trajectory,
             goal,
             first,
             simulate,
         } => cmd_bisect(&repo, &cwd, &trajectory, goal, first, simulate),
+        Command::Sweep {
+            trajectory,
+            simulate,
+        } => cmd_sweep(&repo, &cwd, &trajectory, simulate),
         Command::Export { trajectory, output } => cmd_export(&repo, &trajectory, output),
         Command::Import { file, rename } => cmd_import(&repo, &file, rename.as_deref()),
         Command::Cost { trajectory, price } => cmd_cost(&repo, trajectory, price),
@@ -439,6 +476,122 @@ fn cmd_run(repo: &Repo, cwd: &Path, flags: RunFlags, command: Vec<String>) -> Re
         }
         None => Err(Error::Protocol("nothing was recorded".into())),
     }
+}
+
+/// Every irreversible effect anywhere in a trajectory's family: the root it was
+/// branched from, and every branch of that root at any depth (#92).
+///
+/// A walk and a filter over data every step already carries. Two things make it more
+/// than a grep. A branch shares its parent's prefix *objects*, so an effect is keyed by
+/// its step's address and listed once, under the trajectory that recorded it first.
+/// And an effect carrying a value was not necessarily performed: a `--simulate`d one
+/// has a value nobody produced, and saying "performed" for it would be the lie this
+/// record exists to prevent.
+fn cmd_irreversible(repo: &Repo, name: &str) -> Result<ExitCode> {
+    let all = repo.list_trajectories()?;
+    let by_name: BTreeMap<&str, &Trajectory> = all.iter().map(|t| (t.name.as_str(), t)).collect();
+    let root_of = |t: &Trajectory| -> String {
+        let mut cursor = t;
+        let mut seen = std::collections::BTreeSet::new();
+        while let Some(parent) = cursor
+            .forked_from
+            .as_ref()
+            .and_then(|f| by_name.get(f.trajectory.as_str()))
+        {
+            if !seen.insert(parent.name.clone()) {
+                break;
+            }
+            cursor = parent;
+        }
+        cursor.name.clone()
+    };
+    let start = by_name
+        .get(name)
+        .ok_or_else(|| Error::NotFound(format!("trajectory '{name}'")))?;
+    let root = root_of(start);
+    // `list_trajectories` is ordered by creation, so the first trajectory holding a
+    // step is the one that recorded it.
+    let family: Vec<&Trajectory> = all.iter().filter(|t| root_of(t) == root).collect();
+
+    struct Found {
+        index: u64,
+        target: String,
+        status: &'static str,
+        recorded_in: String,
+        shared_by: usize,
+    }
+    let mut found: BTreeMap<String, Found> = BTreeMap::new();
+    let mut order: Vec<String> = Vec::new();
+    for t in &family {
+        for (digest, step) in repo.chain(t)? {
+            let Some(effect) = step
+                .effects
+                .iter()
+                .find(|e| e.effect == noidroid_core::model::EffectKind::Irreversible)
+            else {
+                continue;
+            };
+            let key = digest.to_string();
+            if let Some(existing) = found.get_mut(&key) {
+                existing.shared_by += 1;
+                continue;
+            }
+            use noidroid_core::model::EffectOutcome;
+            let status = match (effect.outcome, effect.provenance) {
+                (EffectOutcome::Denied, _) => "denied",
+                (EffectOutcome::Error, _) => "failed",
+                (EffectOutcome::Unavailable, _) => "unavailable",
+                (EffectOutcome::Value, Provenance::Simulated | Provenance::Unknown) => {
+                    "simulated, never run"
+                }
+                (EffectOutcome::Value, _) => "performed",
+            };
+            let target = match &step.action {
+                Action::Call { target, .. } => target.clone(),
+                other => other.summary(),
+            };
+            order.push(key.clone());
+            found.insert(
+                key,
+                Found {
+                    index: step.index,
+                    target,
+                    status,
+                    recorded_in: t.name.clone(),
+                    shared_by: 1,
+                },
+            );
+        }
+    }
+
+    println!(
+        "{} {} {}",
+        shell("IRREVERSIBLE"),
+        root,
+        dim(&format!("and its branches ({} trajectories)", family.len()))
+    );
+    if found.is_empty() {
+        println!("  {}", ok("no irreversible effect anywhere in this family"));
+        return Ok(ExitCode::SUCCESS);
+    }
+    for key in &order {
+        let f = &found[key];
+        let status = match f.status {
+            "performed" => warn(f.status),
+            "simulated, never run" => dim(f.status),
+            other => other.to_string(),
+        };
+        let shared = if f.shared_by > 1 {
+            dim(&format!("  (shared by {} trajectories)", f.shared_by))
+        } else {
+            String::new()
+        };
+        println!(
+            "  @{:<4} {:<28} {:<22} in {}{}",
+            f.index, f.target, status, f.recorded_in, shared
+        );
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 fn cmd_log(repo: &Repo, trajectory: Option<String>) -> Result<ExitCode> {
@@ -609,6 +762,39 @@ fn cmd_show(repo: &Repo, reference: &str) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
+/// Request fields that name state a provider holds between calls. A request carrying
+/// one is not self-contained: sending it live during a replay asks the provider to
+/// continue a session whose earlier turns were served from the recording and never
+/// reached it (#91). Content-addressed prompt caching is not on this list — it is keyed
+/// by what is sent, so it cannot disagree with it.
+const SESSION_HANDLE_KEYS: &[&str] = &["previous_response_id", "conversation"];
+
+/// Recorded calls a `--live` prefix covers whose arguments carry a session handle.
+fn session_handles(
+    chain: &[(noidroid_core::Digest, Step)],
+    live: &[String],
+) -> Vec<(u64, String, &'static str)> {
+    let covered = |target: &str| {
+        live.iter()
+            .any(|p| target == p || target.starts_with(&format!("{p}.")))
+    };
+    let mut out = Vec::new();
+    for (_, step) in chain {
+        let Action::Call { target, args, .. } = &step.action else {
+            continue;
+        };
+        if !covered(target) {
+            continue;
+        }
+        for key in SESSION_HANDLE_KEYS {
+            if args.get(key).is_some_and(|v| !v.is_null()) {
+                out.push((step.index, target.clone(), *key));
+            }
+        }
+    }
+    out
+}
+
 fn cmd_replay(
     repo: &Repo,
     cwd: &Path,
@@ -637,6 +823,7 @@ fn cmd_replay(
         watch: None,
     };
     let live_targets = live.clone();
+    let handles = session_handles(&repo.chain(&t)?, &live_targets);
     let report = engine::run(repo, &spec, Mode::Replay { live }, Some(&t))?;
     println!(
         "{} {}{}",
@@ -648,6 +835,14 @@ fn cmd_replay(
             dim(&format!("  live: {}", live_targets.join(", ")))
         }
     );
+    for (index, target, key) in &handles {
+        println!(
+            "  {} @{index} {target} sends `{key}`: the provider continues a server-side \
+             session the replayed prefix never sent it, so this live answer can differ \
+             for a reason the replay cannot see",
+            warn("note:")
+        );
+    }
     println!(
         "  {:<22} {}",
         dim("steps re-derived"),
@@ -722,6 +917,24 @@ fn cmd_replay(
             "\n  {} the reconstruction addresses the same objects as the recording",
             ok("faithful:")
         );
+        // A replay executes nothing, so every observation of a declared world was
+        // served from the recording and its part of that match holds by construction.
+        // The sentence above is true about the program; left alone it reads as true
+        // about the world as well (#53).
+        let unmeasured: Vec<&str> = t
+            .worlds
+            .iter()
+            .filter(|w| !w.grip.is_captured())
+            .map(|w| w.name.as_str())
+            .collect();
+        if !unmeasured.is_empty() && !report.delivery.contains_key("executed") {
+            println!(
+                "  {} {} was served from the recording, not re-driven: this replay \
+                 verified the program, not the world",
+                dim("note:"),
+                unmeasured.join(", ")
+            );
+        }
         Ok(ExitCode::SUCCESS)
     } else {
         println!("\n  {}", warn("divergences:"));
@@ -996,6 +1209,114 @@ fn cmd_restore(repo: &Repo, reference: &str, into: Option<PathBuf>) -> Result<Ex
     Ok(ExitCode::SUCCESS)
 }
 
+/// Re-run a checker against a step's recorded state, offline.
+///
+/// A composition of `checkout-tree` and a subprocess: materialise the step's
+/// `state_root` into a scratch directory nobody else uses, run the command there for
+/// real, and print what happened. Nothing is written back into the trajectory — a
+/// reward function can change and be re-scored for free, because the state it needs
+/// was already addressed the day the step was recorded.
+///
+/// It stores nothing, judges nothing, and knows nothing about tasks: no task
+/// registry, no scoring rule, no reward model. Just a tree, and a command run against
+/// it.
+fn cmd_score(repo: &Repo, name: &str, at: u64, command: Vec<String>) -> Result<ExitCode> {
+    let t = repo.load_trajectory(name)?;
+    let chain = repo.chain(&t)?;
+    let (digest, step) = chain
+        .get(at as usize)
+        .ok_or_else(|| Error::NotFound(format!("{name} has no step {at}")))?;
+
+    let scratch = repo
+        .tmp_dir()
+        .join(format!("score-{name}-{at}-{}", std::process::id()));
+    if scratch.exists() {
+        fs::remove_dir_all(&scratch)
+            .doing(|| format!("clearing the scratch directory {}", scratch.display()))?;
+    }
+    fs::create_dir_all(&scratch)
+        .doing(|| format!("creating the scratch directory {}", scratch.display()))?;
+
+    // Same rule as `checkout-tree`: what was never recorded is never restored. `.world`
+    // is evidence about a world we cannot see, not any part of it, and materialising it
+    // would let a checker read testimony as if it were a file the run produced.
+    //
+    // Nothing else is skipped. `Ignores::for_directory` would add the defaults for a
+    // watched project (`build`, `dist`, `node_modules`, …), and those filter the
+    // *recorded* entries too: a sandbox run that wrote `dist/` would reach its checker
+    // without it, and the score would be computed over a state nobody recorded.
+    let mut ignores = tree::Ignores::none();
+    ignores.add(noidroid_core::env::WORLD_DIR);
+    tree::materialize_with(&step.state_root, &repo.store, &scratch, &ignores)?;
+
+    let joined_command = command.join(" ");
+    let output = std::process::Command::new(&command[0])
+        .args(&command[1..])
+        .current_dir(&scratch)
+        .output()
+        .map_err(|e| Error::Refused(format!("could not run '{joined_command}': {e}")))?;
+    let status = output.status.code();
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+
+    // What the checker actually saw. `captured` means the bytes it read are the whole
+    // recorded state. Anything weaker means the step also rested on a declared world
+    // that was only ever fingerprinted, or not seen at all -- and no fingerprint can be
+    // materialised, so the checker scored the workspace, not everything that produced
+    // the step. Said in words, because a bare `true` next to a score reads as approval.
+    let scored = if step.grip.is_captured() {
+        "the whole recorded state"
+    } else {
+        "the workspace only; a declared world is not materialised"
+    };
+
+    println!("{} {}@{}", shell("SCORE"), name, at);
+    println!("  {:<12} {}", dim("command"), joined_command);
+    println!("  {:<12} {}", dim("state"), step.state_root);
+    println!(
+        "  {:<12} {}",
+        dim("status"),
+        match status {
+            Some(0) => ok("0"),
+            Some(code) => warn(&code.to_string()),
+            None => warn("signalled"),
+        }
+    );
+    println!("  {:<12} {}", dim("grip"), step.grip.label());
+    println!(
+        "  {:<12} {}",
+        dim("scored"),
+        if step.grip.is_captured() {
+            ok(scored)
+        } else {
+            warn(scored)
+        }
+    );
+
+    println!(
+        "\n  ({:?}, {:?}, {:?}, {}, {:?})",
+        digest.to_string(),
+        step.state_root.to_string(),
+        joined_command,
+        status
+            .map(|c| c.to_string())
+            .unwrap_or_else(|| "null".to_string()),
+        step.grip.label(),
+    );
+
+    for (label, text) in [("STDOUT", &stdout), ("STDERR", &stderr)] {
+        if !text.trim().is_empty() {
+            println!("\n  {}", shell(label));
+            for line in text.lines() {
+                println!("    {line}");
+            }
+        }
+    }
+
+    let _ = fs::remove_dir_all(&scratch);
+    Ok(ExitCode::SUCCESS)
+}
+
 /// Which decision, taken differently, would have changed how this ended?
 ///
 /// A trace tells you what happened; it cannot tell you which step *caused* it,
@@ -1183,6 +1504,221 @@ fn cmd_bisect(
             Ok(ExitCode::from(1))
         }
     }
+}
+
+/// Try every named failure against every recorded call, the way `bisect` tries every
+/// alternative against every recorded decision.
+///
+/// `bisect` explains an outcome that already happened: a decision was made, and it
+/// asks whether a different one would have changed the verdict. Nothing here happened
+/// — these are calls that answered normally, made to fail after the fact — so the
+/// reading inverts, and it depends on the kind of failure:
+///
+/// * a **raised** failure (timeout, 500, 429, 401) that leaves a success standing was
+///   *survived* — caught, retried, or routed around. That is handling, not a gap.
+/// * a **value** failure (`empty`, `malformed`) raises nothing. A success that stands
+///   on one is *absorbed*, and it is the finding this command exists for: either the
+///   agent handled that answer or it never looked at it, and only the diff says which.
+/// * a run that did **not** succeed cannot show either. A failure injected into a
+///   failing run that leaves it failing proves nothing about the call.
+///
+/// The words matter because the exit code rides on them: only an absorbed value
+/// failure exits non-zero, so a well-built agent is never failed for its retries.
+fn cmd_sweep(repo: &Repo, cwd: &Path, name: &str, simulate: Vec<String>) -> Result<ExitCode> {
+    let parent = repo.load_trajectory(name)?;
+    let chain = repo.chain(&parent)?;
+    let original = parent.outcome.status.clone();
+
+    let mut simulated = BTreeMap::new();
+    for entry in &simulate {
+        let (target, value) = split_kv(entry)?;
+        simulated.insert(target, parse_value(&value));
+    }
+
+    // Every recorded call, crossed with every named failure.
+    let mut probes: Vec<(u64, String, Failure)> = Vec::new();
+    for (_, step) in &chain {
+        let Action::Call { target, .. } = &step.action else {
+            continue;
+        };
+        for failure in Failure::ALL {
+            probes.push((step.index, target.clone(), failure));
+        }
+    }
+
+    println!(
+        "{} {} {}",
+        shell("SWEEP"),
+        name,
+        dim(&format!("(ended {original})"))
+    );
+    if probes.is_empty() {
+        println!(
+            "  {}",
+            dim("no recorded call was found to probe — a sweep needs at least one nd.call()")
+        );
+        return Ok(ExitCode::SUCCESS);
+    }
+    let calls = probes
+        .iter()
+        .map(|(i, t, _)| (*i, t.clone()))
+        .collect::<std::collections::BTreeSet<_>>()
+        .len();
+    println!(
+        "  {}",
+        dim(&format!(
+            "probing {} failure kind(s) across {calls} call(s) \u{2014} {} probe(s)",
+            Failure::ALL.len(),
+            probes.len()
+        ))
+    );
+    println!();
+
+    // Every probe is run, not just enough to find one: the interesting result is
+    // often not the first one, and stopping early would silently discard exactly what
+    // this command exists to surface.
+    let succeeded = original == "success";
+    if !succeeded {
+        println!(
+            "  {}",
+            warn(&format!(
+                "this run ended {original}, so a failure that leaves it {original} proves \
+                 nothing about the call; only flips can be read"
+            ))
+        );
+        println!();
+    }
+
+    let mut absorbed: Vec<(u64, String, Failure, String, String)> = Vec::new();
+    let mut survived = 0usize;
+    for (at, target, failure) in probes {
+        let label = format!("{name}~{at}~{}", failure.label());
+        // A probe from an earlier sweep is still an answer. Skipping it silently would
+        // drop its row from this report -- and could exit 0 with a finding hidden.
+        let outcome = if repo.has_trajectory(&label) {
+            repo.load_trajectory(&label)?.outcome.status
+        } else {
+            probe(repo, cwd, &parent, name, at, failure, &simulated, &label)?
+        };
+        let established = outcome != "unreachable";
+        let flips = established && outcome != original;
+        // `empty` and `malformed` come back as values; every other kind raises.
+        let silent = matches!(
+            failure.as_intervention(),
+            Intervention::ReplaceResult { .. }
+        );
+
+        let annotation = if !established {
+            format!("  {}", warn("\u{2190} unknown, nothing was established"))
+        } else if flips {
+            format!("  {}", dim("\u{2190} flips it"))
+        } else if !succeeded {
+            format!("  {}", dim("\u{2190} no change (it was already failing)"))
+        } else if silent {
+            absorbed.push((at, target.clone(), failure, outcome.clone(), label.clone()));
+            format!(
+                "  {}",
+                warn("\u{2190} absorbed: succeeded on an answer that was not one")
+            )
+        } else {
+            survived += 1;
+            format!("  {}", ok("\u{2190} survived"))
+        };
+        println!(
+            "  @{at} call {} {} {:<12} {}{}",
+            dim(&target),
+            dim("\u{d7}"),
+            failure.label(),
+            status_text(&outcome),
+            annotation
+        );
+    }
+
+    println!();
+    if survived > 0 {
+        println!(
+            "  {}",
+            ok(&format!(
+                "{survived} raised failure(s) survived \u{2014} the run caught them and still succeeded"
+            ))
+        );
+    }
+    if absorbed.is_empty() {
+        if succeeded {
+            println!(
+                "  {}",
+                ok("no call was absorbed \u{2014} no empty or malformed answer went unnoticed")
+            );
+        }
+        return Ok(ExitCode::SUCCESS);
+    }
+    println!(
+        "  {}",
+        warn(&format!(
+            "{} absorbed \u{2014} the run still succeeded when a call answered with nothing usable:",
+            absorbed.len()
+        ))
+    );
+    for (at, target, failure, outcome, label) in &absorbed {
+        println!(
+            "    @{at} {target} \u{d7} {:<12} still {outcome}",
+            failure.label()
+        );
+        println!("      noidroid diff {name} {label}");
+    }
+    println!(
+        "  {}",
+        dim("either the agent handled that answer or it never looked at it \u{2014} the diff shows which")
+    );
+    Ok(ExitCode::from(1))
+}
+
+/// Run one sweep probe and return the outcome it reached, or `unreachable`.
+#[allow(clippy::too_many_arguments)]
+fn probe(
+    repo: &Repo,
+    cwd: &Path,
+    parent: &Trajectory,
+    name: &str,
+    at: u64,
+    failure: Failure,
+    simulated: &BTreeMap<String, Value>,
+    label: &str,
+) -> Result<String> {
+    let spec = RunSpec {
+        command: parent.command.clone(),
+        launch_dir: cwd.to_path_buf(),
+        name: Some(label.to_string()),
+        env: if parent.auto {
+            auto_capture_env()?
+        } else {
+            Vec::new()
+        },
+        auto: parent.auto,
+        watch: None,
+    };
+    let attempt = engine::run(
+        repo,
+        &spec,
+        Mode::Branch {
+            at,
+            intervention: failure.as_intervention(),
+            simulate: simulated.clone(),
+        },
+        Some(parent),
+    );
+
+    // A probe that could not be re-entered establishes nothing. Unlike `bisect`,
+    // `aborted` is an ordinary verdict here: a program that never catches the
+    // exception a raised failure produces is supposed to abort.
+    Ok(match &attempt {
+        Err(Error::Refused(_)) => "unreachable".to_string(),
+        Err(e) => return Err(Error::Protocol(format!("probing {name}@{at}: {e}"))),
+        Ok(report) => match &report.trajectory {
+            Some(branch) => branch.outcome.status.clone(),
+            None => "unreachable".to_string(),
+        },
+    })
 }
 
 /// A filesystem- and eye-friendly name for a chosen value.
@@ -1956,6 +2492,17 @@ fn print_census(report: &Report) {
     }
     if !delivery.is_empty() {
         println!("  {:<22} {}", dim("steps by delivery"), delivery.join(", "));
+    }
+    // The world the program acted on and never spoke about. Its fingerprint came from
+    // the recording, so the address matched because it could not do anything else --
+    // and a reader who is not told that will read the match as a check that passed.
+    if !report.served.is_empty() {
+        println!(
+            "  {:<22} {} {}",
+            dim("world not re-driven"),
+            warn(&report.served.iter().cloned().collect::<Vec<_>>().join(", ")),
+            dim("(served from the recording; nothing was checked)")
+        );
     }
 }
 

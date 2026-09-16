@@ -53,6 +53,13 @@ MOVES = ["insert", "hold", "withdraw"]
 #: is `opaque`, and printing it is worth more than a number we invented instead.
 BLIND = os.environ.get("REFERENCE_BLIND") == "1"
 
+#: Set to say nothing about the reactor at all -- the adapter that forgets to re-drive.
+#: `BLIND` still declares the world and admits it is not looking; this says nothing,
+#: which is the failure the environment model has to be able to name. Used by the tests
+#: to prove that a reconstruction which never touched its world does not get to report
+#: that the world was checked.
+MUTE = os.environ.get("REFERENCE_MUTE") == "1"
+
 
 def policy(reading: dict) -> str:
     """Chase output while it is cool; pull back once it is nearly too late.
@@ -127,11 +134,12 @@ class Shift:
         """Do something to the real reactor, catching it up first if it is behind."""
         self._catch_up()
         result = action()
-        self._nd.observe(
-            "reactor",
-            None if BLIND else self._reactor.fingerprint(),
-            restorable=False,
-        )
+        if not MUTE:
+            self._nd.observe(
+                "reactor",
+                None if BLIND else self._reactor.fingerprint(),
+                restorable=False,
+            )
         return result if self._grounded else noidroid.Ungrounded(result)
 
     def _catch_up(self) -> None:
