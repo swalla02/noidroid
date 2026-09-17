@@ -7,6 +7,15 @@ how the package version relates to `STEP_VERSION`, the on-disk object format.
 
 ## [Unreleased]
 
+### Added
+
+- **`noidroid demo`, the first five minutes without a clone.** It writes the Python
+  client and the reference environment, both compiled into the binary, into a new or
+  empty directory, then prints the commands that record, branch and compare. The client
+  it writes is byte for byte the one the binary was built with, so the two cannot drift
+  apart, and a test fails if a client module is ever left out of the embedded copy. It
+  refuses to write into a directory that already has something in it. (#104)
+
 ## [0.4.0] - 2026-09-16
 
 The first published release since 0.1.0. The 0.2.0 and 0.3.0 tags exist but never
