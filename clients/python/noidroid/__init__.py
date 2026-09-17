@@ -152,9 +152,18 @@ class Unavailable(NoidroidError):
 class Session:
     """A live connection to the Paranoid Android engine."""
 
-    def __init__(self, path: str) -> None:
-        self._sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self._sock.connect(path)
+    def __init__(self, path: Optional[str] = None) -> None:
+        # A Unix socket where the engine offers one; loopback TCP where it does not,
+        # which is always on Windows (#32). Over TCP the first line must carry the
+        # token the engine put in this process's environment, or it is dropped.
+        address = os.environ.get("NOIDROID_ADDRESS")
+        self._token = os.environ.get("NOIDROID_TOKEN")
+        if address and not path:
+            host, _, port = address.rpartition(":")
+            self._sock = socket.create_connection((host, int(port)))
+        else:
+            self._sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            self._sock.connect(path or os.environ["NOIDROID_SOCKET"])
         self._r = self._sock.makefile("r", encoding="utf-8")
         self._w = self._sock.makefile("w", encoding="utf-8")
         self.mode = os.environ.get("NOIDROID_MODE", "record")
@@ -165,7 +174,10 @@ class Session:
         # changed behaviour across Python versions), and most programs that connect
         # never make an async call at all.
         self._async_lock: Optional[asyncio.Lock] = None
-        hello = self._rpc({"op": "hello", "client": f"python-{PROTOCOL_VERSION}"})
+        greeting = {"op": "hello", "client": f"python-{PROTOCOL_VERSION}"}
+        if self._token:
+            greeting["token"] = self._token
+        hello = self._rpc(greeting)
         #: The `u64` the engine minted for this trajectory's own randomness, or
         #: ``None`` if it did not send one. Freshly minted while recording; served
         #: back unchanged while replaying or branching, so re-executing a prefix
@@ -475,7 +487,7 @@ def connect():
     """
     global _active_session
     path = os.environ.get("NOIDROID_SOCKET")
-    if not path:
+    if not path and not os.environ.get("NOIDROID_ADDRESS"):
         return _PassThrough()
     if _active_session is not None:
         return _active_session

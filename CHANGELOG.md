@@ -15,6 +15,14 @@ how the package version relates to `STEP_VERSION`, the on-disk object format.
   it writes is byte for byte the one the binary was built with, so the two cannot drift
   apart, and a test fails if a client module is ever left out of the embedded copy. It
   refuses to write into a directory that already has something in it. (#104)
+- **Windows.** The engine and the client talked over a hardcoded Unix socket, so the
+  tool could not run on Windows at all. Where there is no Unix socket they now use
+  loopback TCP. Because any local user can reach a loopback port, the engine mints a
+  per-run token from OS randomness, passes it to the child in its environment, and drops
+  any connection whose first line is not a `hello` carrying it. `NOIDROID_TRANSPORT=tcp`
+  forces that path on Unix, and the whole suite passes over it. A Windows CI job
+  records, replays and branches the reference environment. There is no prebuilt Windows
+  binary yet. (#32)
 
 ## [0.4.0] - 2026-09-16
 

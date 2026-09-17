@@ -23,6 +23,7 @@ pub mod model;
 pub mod proto;
 pub mod repo;
 pub mod store;
+pub mod transport;
 pub mod tree;
 pub mod volatility;
 

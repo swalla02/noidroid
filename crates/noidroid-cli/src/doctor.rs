@@ -381,21 +381,21 @@ fn tool_checks(python: &Option<(String, String)>, probe: Result<&Probe, &Blind>)
 
     // Not a probe answer: this is what this binary was built for, and it is the
     // engine's socket rather than the client's that excludes Windows.
-    checks.push(if cfg!(windows) {
-        Check::new(
-            "transport",
-            Verdict::Blocked,
-            "the engine and client talk over AF_UNIX, which this platform does not have (#32)",
-        )
-    } else {
+    checks.push(if cfg!(unix) {
         Check::new(
             "transport",
             Verdict::Ok,
             format!("AF_UNIX on {}", std::env::consts::OS),
         )
+    } else {
+        Check::new(
+            "transport",
+            Verdict::Ok,
+            format!("loopback TCP on {}, with a per-run token", std::env::consts::OS),
+        )
         .note(
             "limit",
-            "Windows is excluded: the socket is hardcoded (#32)",
+            "the executable bit is not recorded here, so a file restored on Unix is never executable",
         )
     });
 

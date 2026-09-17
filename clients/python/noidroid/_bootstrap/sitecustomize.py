@@ -10,7 +10,9 @@ import sys
 
 # Only when a run is actually being recorded, and only once: a program that spawns
 # children would otherwise re-patch in every one of them.
-if os.environ.get("NOIDROID_SOCKET") and not os.environ.get("_NOIDROID_BOOTSTRAPPED"):
+if (os.environ.get("NOIDROID_SOCKET") or os.environ.get("NOIDROID_ADDRESS")) and not os.environ.get(
+    "_NOIDROID_BOOTSTRAPPED"
+):
     os.environ["_NOIDROID_BOOTSTRAPPED"] = "1"
     try:
         from noidroid import auto, fence

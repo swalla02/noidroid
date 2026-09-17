@@ -21,7 +21,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -40,6 +39,7 @@ use crate::model::{
 };
 use crate::proto::{Request, Response};
 use crate::repo::Repo;
+use crate::transport::{Conn, Listener};
 use crate::tree;
 use crate::volatility;
 
@@ -274,13 +274,10 @@ pub fn run(repo: &Repo, spec: &RunSpec, mode: Mode, source: Option<&Trajectory>)
         )?;
     }
 
-    let socket_path = unique_socket_path();
-    let _ = fs::remove_file(&socket_path);
-    let listener = UnixListener::bind(&socket_path)
-        .doing(|| format!("binding the socket {}", socket_path.display()))?;
-    listener
-        .set_nonblocking(true)
-        .doing(|| "putting the socket in non-blocking mode")?;
+    let listener = Listener::bind().doing(|| "opening the connection the program reports to")?;
+    let transport_env = listener
+        .child_env()
+        .doing(|| "reading the address the program reports to")?;
 
     let stdout_path = repo.log_path(&run_label, "out");
     let stderr_path = repo.log_path(&run_label, "err");
@@ -288,7 +285,7 @@ pub fn run(repo: &Repo, spec: &RunSpec, mode: Mode, source: Option<&Trajectory>)
         spec,
         &mode,
         &workspace,
-        &socket_path,
+        &transport_env,
         &stdout_path,
         &stderr_path,
     )?;
@@ -318,8 +315,8 @@ pub fn run(repo: &Repo, spec: &RunSpec, mode: Mode, source: Option<&Trajectory>)
     };
 
     let served = match accept(&listener, &mut child)? {
-        Some(stream) => {
-            let r = session.serve(stream);
+        Some((stream, first)) => {
+            let r = session.serve(stream, first);
             match r {
                 Ok(()) => Ok(()),
                 Err(e) => {
@@ -345,7 +342,7 @@ pub fn run(repo: &Repo, spec: &RunSpec, mode: Mode, source: Option<&Trajectory>)
         ))),
     };
     let status = child.wait()?;
-    let _ = fs::remove_file(&socket_path);
+    drop(listener);
     served?;
 
     let mut report = session.report;
@@ -467,10 +464,11 @@ struct Pending {
 }
 
 impl<'a> Session<'a> {
-    fn serve(&mut self, stream: UnixStream) -> Result<()> {
+    fn serve(&mut self, stream: Conn, first: Option<String>) -> Result<()> {
         let mut out = stream.try_clone()?;
         let reader = BufReader::new(stream);
-        for line in reader.lines() {
+        // A TCP handshake has already read the `hello`; it is still the first request.
+        for line in first.into_iter().map(Ok).chain(reader.lines()) {
             let line = line?;
             if line.trim().is_empty() {
                 continue;
@@ -1595,7 +1593,7 @@ fn spawn(
     spec: &RunSpec,
     mode: &Mode,
     workspace: &Path,
-    socket: &Path,
+    transport: &[(&'static str, String)],
     stdout_path: &Path,
     stderr_path: &Path,
 ) -> Result<Child> {
@@ -1607,7 +1605,7 @@ fn spawn(
         .args(args)
         .envs(spec.env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         .current_dir(workspace)
-        .env("NOIDROID_SOCKET", socket)
+        .envs(transport.iter().map(|(k, v)| (*k, v.as_str())))
         .env("NOIDROID_MODE", mode.label())
         .env("NOIDROID_WORKSPACE", workspace)
         .stdin(Stdio::null())
@@ -1662,34 +1660,24 @@ fn resolve_command(command: &[String], launch_dir: &Path) -> Result<Vec<String>>
     Ok(resolved)
 }
 
-fn accept(listener: &UnixListener, child: &mut Child) -> Result<Option<UnixStream>> {
+fn accept(listener: &Listener, child: &mut Child) -> Result<Option<(Conn, Option<String>)>> {
     let deadline = Instant::now() + CONNECT_TIMEOUT;
     loop {
-        match listener.accept() {
-            Ok((stream, _)) => {
-                stream.set_nonblocking(false)?;
-                return Ok(Some(stream));
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                if let Some(_status) = child.try_wait()? {
-                    // One last look: the child may have connected and exited quickly.
-                    if let Ok((stream, _)) = listener.accept() {
-                        stream.set_nonblocking(false)?;
-                        return Ok(Some(stream));
-                    }
-                    return Ok(None);
-                }
-                if Instant::now() > deadline {
-                    let _ = child.kill();
-                    return Err(Error::Protocol(format!(
-                        "the process did not connect within {}s",
-                        CONNECT_TIMEOUT.as_secs()
-                    )));
-                }
-                std::thread::sleep(POLL);
-            }
-            Err(e) => return Err(e.into()),
+        if let Some(found) = listener.accept()? {
+            return Ok(Some(found));
         }
+        if child.try_wait()?.is_some() {
+            // One last look: the child may have connected and exited quickly.
+            return Ok(listener.accept()?);
+        }
+        if Instant::now() > deadline {
+            let _ = child.kill();
+            return Err(Error::Protocol(format!(
+                "the process did not connect within {}s",
+                CONNECT_TIMEOUT.as_secs()
+            )));
+        }
+        std::thread::sleep(POLL);
     }
 }
 
@@ -1714,30 +1702,12 @@ fn tail_of(path: &Path) -> String {
     )
 }
 
-fn reply(out: &mut UnixStream, response: Response) -> Result<()> {
+fn reply(out: &mut Conn, response: Response) -> Result<()> {
     let mut line = serde_json::to_vec(&response)?;
     line.push(b'\n');
     out.write_all(&line)?;
     out.flush()?;
     Ok(())
-}
-
-fn unique_socket_path() -> PathBuf {
-    // Kept short and in the system temp dir: `sun_path` is limited to ~104 bytes and
-    // a repository can live at an arbitrarily deep path. The counter matters: two
-    // runs starting in the same nanosecond tick is rare, two in the same process is
-    // not.
-    static SEQ: AtomicU64 = AtomicU64::new(0);
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.subsec_nanos() as u64)
-        .unwrap_or(0);
-    std::env::temp_dir().join(format!(
-        "nd-{}-{}-{}.sock",
-        std::process::id(),
-        nanos,
-        SEQ.fetch_add(1, Ordering::Relaxed)
-    ))
 }
 
 fn now_ms() -> u64 {
