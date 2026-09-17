@@ -507,20 +507,23 @@ release. It is checked against its published SHA-256 before it is installed.
 noidroid stand        # 「 ゴ ゴ ゴ ゴ 」
 ```
 
-Then, to record something. The example agent lives in the repository, and the
-Python client is what a recorded program talks to, so this part still wants a
-clone — [#104](https://github.com/swalla02/noidroid/issues/104) is about
-removing that. Python ≥ 3.9:
+Then try the whole thing — record, reconstruct, branch, compare — with nothing but the
+binary and Python ≥ 3.9:
 
 ```bash
-git clone https://github.com/swalla02/noidroid && cd noidroid
-pip install -e clients/python
+noidroid demo                 # writes ./noidroid-demo: the client, and a reactor to break
+cd noidroid-demo && export PYTHONPATH="$PWD"
 
-noidroid run -- python3 examples/flight_agent/agent.py
-noidroid show run-1@2
-noidroid branch run-1@2 --decide pick_flight=FL-203 --simulate 'payments.charge={"ok":true}'
-noidroid diff run-1 alt-1
+noidroid run --name shift -- python3 reference/agent.py     # melts down on tick 4
+noidroid show shift@8
+noidroid branch shift@8 --decide move=insert --label saved
+noidroid diff shift saved                                   # failure → success
+noidroid bisect shift                                       # which decisions would have saved it
 ```
+
+`noidroid demo` writes out the Python client this binary was built with, so the two are
+always the same version. To record your own program, put that client on its
+`PYTHONPATH` the same way.
 
 <details>
 <summary>Building it yourself instead</summary>

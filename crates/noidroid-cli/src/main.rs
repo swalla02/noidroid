@@ -18,6 +18,7 @@ use noidroid_core::model::{Action, Failure, Intervention, Provenance, Step, Traj
 use noidroid_core::repo::{self, Repo};
 use noidroid_core::{tree, Doing, Error, Result};
 
+mod demo;
 mod doctor;
 mod palette;
 mod stand;
@@ -220,6 +221,13 @@ enum Command {
         #[arg(long)]
         plain: bool,
     },
+    /// Write out the reference environment and the Python client, so the whole
+    /// lifecycle can be tried without cloning anything.
+    Demo {
+        /// Where to put it. Must be new or empty.
+        #[arg(default_value = "noidroid-demo")]
+        directory: PathBuf,
+    },
     /// The Stand.
     Stand,
 }
@@ -346,6 +354,7 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
         // Already answered above, without the repository this arm now has.
         Command::Doctor { command } => Ok(doctor::run(&command)),
         Command::Tui { trajectory, plain } => tui::run(&repo, &cwd, trajectory, plain),
+        Command::Demo { directory } => demo::cmd_demo(&directory),
         Command::Stand => {
             stand::print_profile();
             Ok(ExitCode::SUCCESS)
