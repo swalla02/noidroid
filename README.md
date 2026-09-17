@@ -548,6 +548,7 @@ export PYTHONPATH=$PWD/clients/python        # or: pip install -e clients/python
 | `noidroid show <traj>@<step>` | inspect a checkpoint and how to explore from it |
 | `noidroid replay <traj>` | re-derive a trajectory and check it still hashes the same |
 | `noidroid branch <traj>@<step>` | diverge: `--decide`, `--result`, `--fail` or `--inject` |
+| `noidroid branch … --json` | one fork-point record: did the shared prefix re-derive to the parent's objects, what was that worth, which worlds did nobody re-drive |
 | `noidroid checkout <traj>@<step> <dir>` | write out the workspace as it was |
 | `noidroid score <traj> --at <step> -- <cmd>` | re-run a checker against a step's recorded state, offline; stores and judges nothing |
 | `noidroid run --proxy -- <cmd>` | record an agent you did not write, in any language |

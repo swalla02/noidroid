@@ -121,6 +121,11 @@ enum Command {
         /// point: `--simulate target='<json>'`. Without one, such calls are denied.
         #[arg(long, value_name = "TARGET=JSON")]
         simulate: Vec<String>,
+        /// Print one fork-point record as JSON instead of the report: whether the shared
+        /// prefix re-derived to the parent's objects, what that check was worth, and
+        /// which worlds nobody re-drove.
+        #[arg(long)]
+        json: bool,
     },
     /// Put the files back as they were at a checkpoint, saving the current ones first.
     Restore {
@@ -313,8 +318,9 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
             fail,
             inject,
             simulate,
+            json,
         } => cmd_branch(
-            &repo, &cwd, &reference, label, decide, result, fail, inject, simulate,
+            &repo, &cwd, &reference, label, decide, result, fail, inject, simulate, json,
         ),
         Command::Checkout {
             reference,
@@ -606,6 +612,86 @@ fn cmd_irreversible(repo: &Repo, name: &str) -> Result<ExitCode> {
         );
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// One fork point, as evidence a branching trainer can consume (#64).
+///
+/// Deliberately not a score. `prefix_verified` is hash equality: the branch's last
+/// shared step is the parent's object, or it is not. `evidence` says what that equality
+/// could prove, `served` names the worlds nobody re-drove, and a divergence is reported
+/// as the divergence it is. Deciding what to do with an unverified sibling is the
+/// trainer's job, and it needs the facts, not a number standing in for them.
+fn fork_record(
+    repo: &Repo,
+    parent: &Trajectory,
+    at: u64,
+    attempt: Result<Report>,
+) -> Result<ExitCode> {
+    let chain = repo.chain(parent)?;
+    let point = checkpoint::at(&chain, at)
+        .ok_or_else(|| Error::NotFound(format!("{} has no step {at}", parent.name)))?;
+    let before = at.checked_sub(1).and_then(|i| chain.get(i as usize));
+
+    let mut record = serde_json::json!({
+        "trajectory": parent.name,
+        "fork_index": at,
+        "step_address": point.step.to_string(),
+        "reach": point.reach.label(),
+        "evidence": point.evidence.label(),
+        "grounding": point.grounding.label(),
+        "recorded_state_root": before.map(|(_, s)| s.state_root.to_string()),
+        "rederived_state_root": Value::Null,
+        "prefix_verified": Value::Null,
+        "served": [],
+        "divergence": Value::Null,
+        "branch": Value::Null,
+        "outcome": Value::Null,
+    });
+
+    let verified = match attempt {
+        Err(Error::Refused(why)) => {
+            record["refused"] = Value::String(why);
+            false
+        }
+        Err(other) => return Err(other),
+        Ok(report) => {
+            record["served"] = serde_json::json!(report.served);
+            if let Some(d) = report.divergences.iter().find(|d| d.index < at) {
+                record["divergence"] = serde_json::json!({
+                    "index": d.index,
+                    "kind": d.kind.label(),
+                    "detail": d.detail,
+                });
+            }
+            match &report.trajectory {
+                Some(branch) => {
+                    let theirs = repo.chain(branch)?;
+                    let rederived = at.checked_sub(1).and_then(|i| theirs.get(i as usize));
+                    let same = match (before, rederived) {
+                        (Some((a, _)), Some((b, _))) => a == b,
+                        (None, None) => true,
+                        _ => false,
+                    };
+                    record["rederived_state_root"] =
+                        serde_json::json!(rederived.map(|(_, s)| s.state_root.to_string()));
+                    record["prefix_verified"] = Value::Bool(same);
+                    record["branch"] = Value::String(branch.name.clone());
+                    record["outcome"] = Value::String(branch.outcome.status.clone());
+                    same && record["divergence"].is_null()
+                }
+                None => {
+                    record["prefix_verified"] = Value::Bool(false);
+                    false
+                }
+            }
+        }
+    };
+    println!("{record}");
+    Ok(if verified {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(1)
+    })
 }
 
 fn cmd_log(repo: &Repo, trajectory: Option<String>) -> Result<ExitCode> {
@@ -978,6 +1064,7 @@ fn cmd_branch(
     fail: Option<String>,
     inject: Option<String>,
     simulate: Vec<String>,
+    json: bool,
 ) -> Result<ExitCode> {
     // A named failure is just an intervention with the payload written for you —
     // which is the difference between a thing people do and a thing people mean to.
@@ -1065,7 +1152,7 @@ fn cmd_branch(
         auto: parent.auto,
         watch: None,
     };
-    let report = engine::run(
+    let attempt = engine::run(
         repo,
         &spec,
         Mode::Branch {
@@ -1074,7 +1161,11 @@ fn cmd_branch(
             simulate: simulated,
         },
         Some(&parent),
-    )?;
+    );
+    if json {
+        return fork_record(repo, &parent, at, attempt);
+    }
+    let report = attempt?;
     print_child_output(&report);
 
     // The prefix has to be reachable, or the branch is not from where it claims.
