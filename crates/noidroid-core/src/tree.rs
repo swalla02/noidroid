@@ -7,7 +7,6 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use crate::error::{Doing, Result};
@@ -150,7 +149,7 @@ fn collect(
                 .replace('\\', "/");
             let blob =
                 store.put(&fs::read(&path).doing(|| format!("reading {}", path.display()))?)?;
-            let executable = meta.permissions().mode() & 0o111 != 0;
+            let executable = is_executable(&meta);
             out.push(TreeEntry {
                 path: rel,
                 blob,
@@ -208,8 +207,7 @@ pub fn materialize_with(
         }
         fs::write(&path, store.get(&entry.blob)?)
             .doing(|| format!("restoring {}", path.display()))?;
-        fs::set_permissions(&path, fs::Permissions::from_mode(entry.mode))
-            .doing(|| format!("setting the mode of {}", path.display()))?;
+        set_mode(&path, entry.mode)?;
     }
     Ok(())
 }
@@ -246,6 +244,31 @@ fn prune(dir: &Path, wanted: &BTreeSet<PathBuf>, ignores: &Ignores) -> Result<bo
         }
     }
     Ok(empty)
+}
+
+/// The executable bit is the only mode a tree records. Windows has no such bit, so a
+/// file recorded there is never executable, and restoring one leaves the mode alone.
+#[cfg(unix)]
+fn is_executable(meta: &fs::Metadata) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    meta.permissions().mode() & 0o111 != 0
+}
+
+#[cfg(not(unix))]
+fn is_executable(_meta: &fs::Metadata) -> bool {
+    false
+}
+
+#[cfg(unix)]
+fn set_mode(path: &Path, mode: u32) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(mode))
+        .doing(|| format!("setting the mode of {}", path.display()))
+}
+
+#[cfg(not(unix))]
+fn set_mode(_path: &Path, _mode: u32) -> Result<()> {
+    Ok(())
 }
 
 pub fn read(digest: &Digest, store: &Store) -> Result<Tree> {
@@ -320,6 +343,7 @@ mod tests {
         fs::remove_dir_all(base).ok();
     }
 
+    #[cfg(unix)]
     #[test]
     fn materialize_keeps_the_directory_itself() {
         use std::os::unix::fs::MetadataExt;

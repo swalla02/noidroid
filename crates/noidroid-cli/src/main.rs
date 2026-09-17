@@ -247,6 +247,7 @@ fn main() -> ExitCode {
 /// Rust ignores `SIGPIPE`, which turns `noidroid log | head` into a panic on a
 /// broken pipe. Restore the default so the process just ends, like every other
 /// command-line tool. Six lines of FFI beats taking a dependency for one constant.
+#[cfg(unix)]
 fn restore_default_sigpipe() {
     const SIGPIPE: i32 = 13; // the same on Linux and macOS
     const SIG_DFL: usize = 0;
@@ -259,6 +260,10 @@ fn restore_default_sigpipe() {
         signal(SIGPIPE, SIG_DFL);
     }
 }
+
+/// Windows has no `SIGPIPE`; a closed pipe is an ordinary write error there.
+#[cfg(not(unix))]
+fn restore_default_sigpipe() {}
 
 fn dispatch(cli: Cli) -> Result<ExitCode> {
     // Answered before anything is opened, deliberately: a preflight is about the

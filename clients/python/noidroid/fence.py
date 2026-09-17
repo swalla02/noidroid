@@ -111,7 +111,7 @@ def install(strict: bool = True) -> None:
     original_connect_ex = socket.socket.connect_ex
 
     def guard(self, address):
-        if self.family == socket.AF_UNIX or _is_local(address):
+        if self.family == getattr(socket, "AF_UNIX", None) or _is_local(address):
             return None
         if _inside_authorised_call():
             return None  # the engine asked for this one
@@ -126,7 +126,7 @@ def install(strict: bool = True) -> None:
         )
 
     def _noted(self, address) -> None:
-        if not (self.family == socket.AF_UNIX or _is_local(address)):
+        if not (self.family == getattr(socket, "AF_UNIX", None) or _is_local(address)):
             _blocked.append(_describe(address))
 
     def connect(self, address):

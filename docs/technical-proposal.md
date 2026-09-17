@@ -355,7 +355,7 @@ that the recorded effects do not capture. `observe` is what makes a step's state
 `witnessed` rather than `captured`: a fingerprint we can compare and can never put back.
 
 The adapter surface is **a wire protocol, not an SDK**. That is the anti-lock-in decision: the
-Python client is ~200 lines of stdlib and speaks NDJSON over `AF_UNIX`. Reimplementing it in Node,
+Python client is ~200 lines of stdlib and speaks NDJSON over `AF_UNIX`, or loopback TCP with a per-run token where there is no Unix socket (Windows, #32). Reimplementing it in Node,
 Go, C++ or inside a ROS node is an afternoon, and requires nothing from us — no bindings, no ABI, no
 release coupling.
 
@@ -363,7 +363,7 @@ release coupling.
                  ┌──────────────────────────────┐
                  │  noidroid-core (Rust)        │  objects · store · engine · provenance
                  └──────────────┬───────────────┘
-                                │  NDJSON / AF_UNIX  (the only integration contract)
+                                │  NDJSON / AF_UNIX or TCP (the only integration contract)
         ┌───────────────┬───────┴────────┬─────────────────┐
     Python client    Node client     C++/ROS node     anything else
 ```

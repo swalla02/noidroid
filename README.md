@@ -695,7 +695,6 @@ DOCTOR  what a recording made now would and would not cover
     client        ok              importable from …/clients/python/noidroid/__init__.py
     version       not determined  importable from source, not installed as a distribution
     transport     ok              AF_UNIX on linux
-      · limit       Windows is excluded: the socket is hardcoded (#32)
 
   CAPTURE SURFACES
     anthropic     ok              0.122.0 is installed, and every request surface found is hooked
@@ -908,7 +907,11 @@ cannot be vague about its own boundaries.
   exception type.** A program that branches on exception class rather than on the
   failure itself will be reported as divergent.
 - **No scale work.** No packing, no garbage collection, no remote store, no large
-  artifact handling. Unix sockets only, so Linux and macOS but not Windows.
+  artifact handling.
+- **Windows builds from source, and is not packaged.** The engine and client use loopback
+  TCP with a per-run token there instead of a Unix socket (#32), and CI records, replays
+  and branches on it. There is no prebuilt Windows binary yet, and the executable bit is
+  not recorded for files captured on Windows.
 
 ---
 

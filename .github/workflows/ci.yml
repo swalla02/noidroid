@@ -120,6 +120,40 @@ jobs:
       # fail, so that contributors without Chromium can still run the suite.
       - run: cargo test --all
 
+  windows:
+    name: records and replays on Windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      # The full suite assumes a Unix shell and a `python3` binary in dozens of places,
+      # so it is not what backs the Windows claim. This is: the engine's own unit tests,
+      # then the real binary recording, replaying and branching the example over the
+      # loopback TCP transport that Windows gets instead of a Unix socket (#32).
+      - run: cargo test -p noidroid-core --lib
+      - run: cargo build -p noidroid-cli
+      - name: Record, replay and branch the example
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="$PWD/target/debug:$PATH"
+          export PYTHONPATH="$PWD/clients/python"
+          export NO_COLOR=1
+          work=$(mktemp -d)
+          cp -r examples/reference "$work/reference"
+          cd "$work"
+          noidroid run --name shift -- python reference/agent.py || true
+          noidroid log shift | tee log.txt
+          grep -q "failure" log.txt
+          noidroid replay shift | tee replay.txt
+          grep -q "faithful:" replay.txt
+          noidroid branch shift@8 --decide move=insert --label saved
+          noidroid diff shift saved | tee diff.txt
+          grep -q "failure → success" diff.txt
+
   test-macos:
     name: tests (macOS)
     runs-on: macos-latest
