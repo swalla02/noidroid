@@ -9,6 +9,15 @@ how the package version relates to `STEP_VERSION`, the on-disk object format.
 
 ### Added
 
+- **`noidroid branch … --json` prints a fork-point record.** Branching RL forks a
+  rollout and assumes the fork reproduced the state it came from, and nothing checks it.
+  The record reports the fork index and the step address, then whether the branch's
+  last shared step is the parent's exact object (`prefix_verified`, hash equality, not
+  a score). It adds what that equality could prove (`evidence`), whether the point was
+  reachable, which worlds nobody re-drove (`served`), and any divergence. Stdout is
+  that one JSON line. The exit code is non-zero for an unverified or unreachable fork.
+  On the reference environment, all 12 forks at its four decision points verified;
+  per #64 that is a result, not an absence of one. (#64)
 - **`noidroid demo`, the first five minutes without a clone.** It writes the Python
   client and the reference environment, both compiled into the binary, into a new or
   empty directory, then prints the commands that record, branch and compare. The client
